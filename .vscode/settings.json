@@ -1,0 +1,7 @@
+{
+    "C_Cpp.default.compilerPath": "F:/msys64/mingw64/bin/g++.exe",
+    "files.associations": {
+        "omp.h": "c",
+        "stdio.h": "c"
+    }
+}
