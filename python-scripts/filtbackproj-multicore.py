@@ -125,7 +125,7 @@ if __name__ == '__main__':
     print(f"Detected CPU cores: {num_cores}")
 
     # myImg = dummyImg(400, 400)
-    myImg = Image.open('SheppLogan.png').convert('L')
+    myImg = Image.open('Python scripts/OIP.png').convert('L')
 
     myImgPad, c0, c1 = padImage(myImg)
     dTheta = 1

@@ -50,6 +50,7 @@ def getProj(img, theta):
     ax2.set_xlabel('Angle (deg)')
     ax2.set_title('Sinogram')
     plt.show()
+    # plt.close()
 
     #get projections an dplot
     for n in range(numAngles): # 90 - theta[n]：對Y軸求和，順時針旋轉
@@ -152,7 +153,8 @@ if __name__ == '__main__':
     start_time = time.perf_counter()
     #myImg = dummyImg(400,400)
     # convert('L')轉成灰階影像，每個像素以8個bit表示，0表示黑，255表示白。
-    myImg = Image.open('SheppLogan.png').convert('L')
+    # myImg = Image.open('SheppLogan.png').convert('L')
+    myImg = Image.open('Python scripts/OIP.png').convert('L')
         
     myImgPad, c0, c1 = padImage(myImg)  #PIL image object
     dTheta = 1
@@ -180,3 +182,4 @@ if __name__ == '__main__':
     ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray') #note this currently doesn't work for imported images
     ax3.set_title('Error')
     plt.show()
+    # plt.close()
