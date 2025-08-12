@@ -1,7 +1,32 @@
 {
     "C_Cpp.default.compilerPath": "F:/msys64/mingw64/bin/g++.exe",
+
     "files.associations": {
         "omp.h": "c",
         "stdio.h": "c"
+        
+    },
+    
+    "python.defaultInterpreterPath": "f:/TEEP/CT-Image-Reconstruction-Project/.conda/python.exe",
+    "python.terminal.activateEnvironment": false,
+    "python.terminal.activateEnvInCurrentTerminal": false,
+    
+    "terminal.integrated.profiles.windows": {
+        
+        "PowerShell": {
+            "source": "PowerShell",
+            "icon": "terminal-powershell"
+        },
+        "Command Prompt": {
+            "path": [
+                "${env:windir}\\Sysnative\\cmd.exe",
+                "${env:windir}\\System32\\cmd.exe"
+            ],
+            "args": [],
+            "icon": "terminal-cmd"
+        },
+        "Git Bash": {
+            "source": "Git Bash"
+        }
     }
 }
