@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image, ImageChops
 from scipy.fftpack import fft, fftshift, ifft
+import time
 
 def dummyImg(size0, size1):
     """只是創建一個由實心矩形組成的虛擬8位元影像
@@ -148,7 +149,7 @@ def arange2(start, stop=None, step=1):
 
 #def main():
 if __name__ == '__main__':
-
+    start_time = time.perf_counter()
     #myImg = dummyImg(400,400)
     # convert('L')轉成灰階影像，每個像素以8個bit表示，0表示黑，255表示白。
     myImg = Image.open('SheppLogan.png').convert('L')
@@ -168,6 +169,9 @@ if __name__ == '__main__':
     n0, n1 = myImg.size
     reconImg = reconImg.crop((c0, c1, c0+n0, c1+n1))
 
+    end_time = time.perf_counter()
+    print(f"Execution time: {end_time - start_time:.6f} seconds")
+
     fig3, (ax1, ax2, ax3) = plt.subplots(1,3, figsize=(12,4))
     ax1.imshow(myImg, cmap='gray')
     ax1.set_title('Original Image')
@@ -176,7 +180,3 @@ if __name__ == '__main__':
     ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray') #note this currently doesn't work for imported images
     ax3.set_title('Error')
     plt.show()
-
-
-
-

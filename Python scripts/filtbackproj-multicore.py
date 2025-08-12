@@ -4,6 +4,7 @@ from PIL import Image, ImageChops
 from scipy.fftpack import fft, fftshift, ifft
 from joblib import Parallel, delayed
 import multiprocessing
+import time
 
 
 def dummyImg(size0, size1):
@@ -26,6 +27,7 @@ def padImage(img):
 def _single_proj(img_arr, angle_deg):
     # rotate using NumPy/OpenCV-like transformation
     img_rot = Image.fromarray(img_arr).rotate(90 - angle_deg, resample=Image.BICUBIC)
+    # print(f"Single projection: {angle_deg} degree")
     return np.sum(np.array(img_rot), axis=0)
 
 
@@ -89,6 +91,8 @@ def _backproj_single_angle(sinogram_col, theta_rad, X, Y, imageLen):
     projMatrix = np.zeros((imageLen, imageLen))
     mx, my = np.where((XrotCor >= 0) & (XrotCor <= (imageLen - 1)))
     projMatrix[mx, my] = sinogram_col[XrotCor[mx, my]]
+
+    # print(f"Backprojection theta: {theta_rad}")
     return projMatrix
 
 
@@ -116,6 +120,7 @@ def backproject(sinogram, theta, n_jobs=None):
 
 
 if __name__ == '__main__':
+    start_time = time.perf_counter()
     num_cores = multiprocessing.cpu_count()
     print(f"Detected CPU cores: {num_cores}")
 
@@ -139,6 +144,9 @@ if __name__ == '__main__':
     reconImg = Image.fromarray(recon2.astype('uint8'))
     n0, n1 = myImg.size
     reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
+
+    end_time = time.perf_counter()
+    # print(f"Execution time: {end_time - start_time:.6f} seconds")
 
     fig3, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 4))
     ax1.imshow(myImg, cmap='gray')
