@@ -41,28 +41,28 @@ def getProj(img, theta):
     sinogram = np.zeros((img.size[0],numAngles)) # (y, x)
 
     #set up plotting
-    plt.ion() # 打開交互模式，碰到plt.show()不會停止
-    fig1, (ax1, ax2) = plt.subplots(1,2)
-    im1 = ax1.imshow(img, cmap='gray')
-    ax1.set_title('<-- Sum')
-    im2 = ax2.imshow(sinogram, extent=[theta[0],theta[-1], img.size[0]-1, 0],
-                     cmap='gray', aspect='auto')
-    ax2.set_xlabel('Angle (deg)')
-    ax2.set_title('Sinogram')
-    plt.show()
+    # plt.ion() # 打開交互模式，碰到plt.show()不會停止
+    # fig1, (ax1, ax2) = plt.subplots(1,2)
+    # im1 = ax1.imshow(img, cmap='gray')
+    # ax1.set_title('<-- Sum')
+    # im2 = ax2.imshow(sinogram, extent=[theta[0],theta[-1], img.size[0]-1, 0],
+    #                  cmap='gray', aspect='auto')
+    # ax2.set_xlabel('Angle (deg)')
+    # ax2.set_title('Sinogram')
+    # plt.show()
     # plt.close()
 
     #get projections an dplot
     for n in range(numAngles): # 90 - theta[n]：對Y軸求和，順時針旋轉
         rotImgObj = img.rotate(90-theta[n], resample=Image.BICUBIC)
-        im1.set_data(rotImgObj)
+        # im1.set_data(rotImgObj)
         sinogram[:,n] = np.sum(rotImgObj, axis=0) # 表示沿着垂直的方向求和 
         # im2.set_data將圖片更新為新的資料，np.ptp求最大值與最小值之差值
-        im2.set_data(Image.fromarray((sinogram-np.min(sinogram))/np.ptp(sinogram)*255))
-        fig1.canvas.draw() # 用來重新繪製整張圖表
-        fig1.canvas.flush_events() # 用於在每次迭代時清除圖形，以使後續圖形不會重疊。
+        # im2.set_data(Image.fromarray((sinogram-np.min(sinogram))/np.ptp(sinogram)*255))
+        # fig1.canvas.draw() # 用來重新繪製整張圖表
+        # fig1.canvas.flush_events() # 用於在每次迭代時清除圖形，以使後續圖形不會重疊。
 
-    plt.ioff() # 顯示前關掉交互模式
+    # plt.ioff() # 顯示前關掉交互模式
     return sinogram
 
 def projFilter(sino):
@@ -72,7 +72,7 @@ def projFilter(sino):
     inputs: sino - [n x m] numpy array，n是投影數量，m是使用的角度數量。
     outputs: filtSino - [n x m] filtered sinogram array"""
     
-    a = 0.1;
+    a = 0.5;
     projLen, numAngles = sino.shape
     step = 2*np.pi/projLen
     w = arange2(-np.pi, np.pi, step)
@@ -93,6 +93,26 @@ def projFilter(sino):
         filtProj = projfft*filt  # 
         filtSino[:,i] = np.real(ifft(filtProj))
 
+    # Plot input and filtered sinograms side-by-side
+    # plt.figure(figsize=(12, 5))
+    
+    # plt.subplot(1, 2, 1)
+    # plt.imshow(sino, cmap='gray', aspect='auto', 
+    #            extent=[0, numAngles, projLen, 0])
+    # plt.title("Input Sinogram")
+    # plt.xlabel("Projection Angle Index")
+    # plt.ylabel("Projection Position")
+    
+    # plt.subplot(1, 2, 2)
+    # plt.imshow(filtSino, cmap='gray', aspect='auto', 
+    #            extent=[0, numAngles, projLen, 0])
+    # plt.title("Filtered Sinogram")
+    # plt.xlabel("Projection Angle Index")
+    # plt.ylabel("Projection Position")
+    
+    # plt.tight_layout()
+    # plt.show()
+
     return filtSino
         
 def backproject(sinogram, theta):
@@ -107,9 +127,9 @@ def backproject(sinogram, theta):
     y = x.copy()
     X, Y = np.meshgrid(x, y)
 
-    plt.ion()
-    fig2, ax = plt.subplots()
-    im = plt.imshow(reconMatrix, cmap='gray')
+    # plt.ion()
+    # fig2, ax = plt.subplots()
+    # im = plt.imshow(reconMatrix, cmap='gray')
 
     theta = theta*np.pi/180
     numAngles = len(theta)
@@ -128,13 +148,13 @@ def backproject(sinogram, theta):
         # 將投影數據映射到反投影矩陣的合理位置，backproject in-bounds data
         projMatrix[mx, my] = s[XrotCor[mx, my]]  
         reconMatrix += projMatrix
-        im.set_data(Image.fromarray((reconMatrix-np.min(reconMatrix))/np.ptp(reconMatrix)*255))
-        ax.set_title('Theta = %.2f degrees' % (theta[n]*180/np.pi))
-        fig2.canvas.draw()
-        fig2.canvas.flush_events()
+        # im.set_data(Image.fromarray((reconMatrix-np.min(reconMatrix))/np.ptp(reconMatrix)*255))
+        # ax.set_title('Theta = %.2f degrees' % (theta[n]*180/np.pi))
+        # fig2.canvas.draw()
+        # fig2.canvas.flush_events()
          
-    plt.close()
-    plt.ioff()
+    # plt.close()
+    # plt.ioff()
     backprojArray = np.flipud(reconMatrix)
     return backprojArray
 
