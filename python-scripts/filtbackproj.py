@@ -174,7 +174,7 @@ if __name__ == '__main__':
     #myImg = dummyImg(400,400)
     # convert('L')轉成灰階影像，每個像素以8個bit表示，0表示黑，255表示白。
     # myImg = Image.open('SheppLogan.png').convert('L')
-    myImg = Image.open('data/phantoms/OIP.png').convert('L')
+    myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
         
     myImgPad, c0, c1 = padImage(myImg)  #PIL image object
     dTheta = 1

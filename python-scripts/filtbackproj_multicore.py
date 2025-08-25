@@ -64,7 +64,7 @@ def _filter_single_angle(proj_col, filt):
 
 
 def projFilter(sino, n_jobs=None):
-    a = 0.1
+    a = 0.5
     projLen, numAngles = sino.shape
     step = 2 * np.pi / projLen
     w = arange2(-np.pi, np.pi, step)
@@ -125,7 +125,7 @@ if __name__ == '__main__':
     print(f"Detected CPU cores: {num_cores}")
 
     # myImg = dummyImg(400, 400)
-    myImg = Image.open('data/phantoms/OIP.png').convert('L')
+    myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
 
     myImgPad, c0, c1 = padImage(myImg)
     dTheta = 1
@@ -146,7 +146,7 @@ if __name__ == '__main__':
     reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
 
     end_time = time.perf_counter()
-    # print(f"Execution time: {end_time - start_time:.6f} seconds")
+    print(f"Execution time: {end_time - start_time:.6f} seconds")
 
     fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
     ax1.imshow(myImg, cmap='gray')

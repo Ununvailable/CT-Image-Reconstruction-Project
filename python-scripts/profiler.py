@@ -1,8 +1,9 @@
-import pandas as pd
 import cProfile
 import pstats
 import io
-from filtbackproj import *
+from filtbackproj_multicore import *
+
+import pandas as pd
 
 def profile_to_dataframe(func, *args, **kwargs):
     """Profile function and return results as DataFrame"""
@@ -46,8 +47,9 @@ def profile_to_dataframe(func, *args, **kwargs):
 # Usage
 if __name__ == '__main__':
     # Load image
-    myImg = Image.open('data/phantoms/SheppLogan.png').convert('L')
-    myImgPad, c0, c1 = padImage(myImg)
+    myImg = '004001_01_01_066'
+    myImgPath = Image.open(f'data/phantoms/{myImg}.png').convert('L')
+    myImgPad, c0, c1 = padImage(myImgPath)
     theta = np.arange(0, 361, 1)
     
     # Profile each function
@@ -61,10 +63,10 @@ if __name__ == '__main__':
     backproj_df, recon = profile_to_dataframe(backproject, filtSino, theta)
     
     # Create Excel file with multiple sheets
-    profiling_script = 'filtbackproj'
-    with pd.ExcelWriter(f'data/profiling_result/{profiling_script}.xlsx', engine='openpyxl') as writer:
+    profiling_script = 'filtbackproj_multicore'
+    with pd.ExcelWriter(f'data/profiling_result/{myImg}_{profiling_script}.xlsx', engine='openpyxl') as writer:
         getproj_df.to_excel(writer, sheet_name='Forward_Projection', index=False)
         filter_df.to_excel(writer, sheet_name='Filtering', index=False)
         backproj_df.to_excel(writer, sheet_name='Backprojection', index=False)
     
-    print(f"Results saved to data/profiling_result/{profiling_script}.xlsx")
+    print(f"Results saved to data/profiling_result/{myImg}_{profiling_script}.xlsx")
