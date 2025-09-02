@@ -65,14 +65,16 @@ def getProj(img, theta):
     # plt.ioff() # 顯示前關掉交互模式
     return sinogram
 
-def projFilter(sino):
+def projFilter(sino, n_jobs=None):
     """過濾投影：通常，在濾波反投影中使用Ramp濾波器乘以window函數。這裡的濾波器
        函數可以透過單一參數「a」進行調整，以近似純Ramp濾波器（a ~ 0）或乘以具有
        增加截止頻率的sinc視窗（a ~ 1）。以上為Wakas Aqram的貢獻。 
     inputs: sino - [n x m] numpy array，n是投影數量，m是使用的角度數量。
-    outputs: filtSino - [n x m] filtered sinogram array"""
+    outputs: filtSino - [n x m] filtered sinogram array
+    Note: Added n_jobs for parallel compututing function of the same name"""
     
-    a = 0.5;
+    a = 0.5
+    n_jobs = 0
     projLen, numAngles = sino.shape
     step = 2*np.pi/projLen
     w = arange2(-np.pi, np.pi, step)
@@ -182,7 +184,7 @@ if __name__ == '__main__':
     print('Getting projections\n')
     mySino = getProj(myImgPad, theta)  #numpy array
     print('Filtering\n')
-    filtSino = projFilter(mySino)  #numpy array
+    filtSino = projFilter(mySino, 1)  #numpy array
     print('Performing backprojection')  
 
     recon = backproject(filtSino, theta)

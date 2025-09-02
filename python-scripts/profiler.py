@@ -44,8 +44,11 @@ def profile_to_dataframe(func, *args, **kwargs):
     
     return pd.DataFrame(data), result
 
-# Usage
+
 if __name__ == '__main__':
+    # Number of core
+    coreNum = 8
+    
     # Load image
     myImg = '004001_01_01_066'
     myImgPath = Image.open(f'data/phantoms/{myImg}.png').convert('L')
