@@ -63,7 +63,7 @@ def _filter_single_angle(proj_col, filt):
     return np.real(ifft(filtProj))
 
 
-def projFilter(sino, n_jobs=None):
+def projFilter(sino, n_jobs):
     a = 0.5
     projLen, numAngles = sino.shape
     step = 2 * np.pi / projLen
@@ -122,13 +122,14 @@ def backproject(sinogram, theta, n_jobs=None):
 if __name__ == '__main__':
     start_time = time.perf_counter()
     num_cores = multiprocessing.cpu_count()
+    # num_cores = 2
     print(f"Detected CPU cores: {num_cores}")
 
     # myImg = dummyImg(400, 400)
     myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
 
     myImgPad, c0, c1 = padImage(myImg)
-    dTheta = 1
+    dTheta = 0.1
     theta = np.arange(0, 361, dTheta)
 
     print('Getting projections (parallel)...')

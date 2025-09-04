@@ -117,7 +117,7 @@ def projFilter(sino, n_jobs=None):
 
     return filtSino
         
-def backproject(sinogram, theta):
+def backproject(sinogram, theta, n_jobs):
     """Backprojection function. 
     inputs:  sinogram - [n x m] numpy array，n是投影數量，m是使用的角度數量。
              theta - 長度為 m 的向量表示正弦圖中表示的角度
@@ -187,7 +187,7 @@ if __name__ == '__main__':
     filtSino = projFilter(mySino, 1)  #numpy array
     print('Performing backprojection')  
 
-    recon = backproject(filtSino, theta)
+    recon = backproject(filtSino, theta, 1)
     recon2 = np.round((recon-np.min(recon))/np.ptp(recon)*255) #convert values to integers 0-255
     reconImg = Image.fromarray(recon2.astype('uint8'))
     n0, n1 = myImg.size

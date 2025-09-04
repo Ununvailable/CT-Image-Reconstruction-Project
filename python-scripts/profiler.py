@@ -1,7 +1,7 @@
 import cProfile
 import pstats
 import io
-from filtbackproj_multicore import *
+from filtbackproj_multicore_full_parallelization import *
 
 import pandas as pd
 
@@ -47,7 +47,7 @@ def profile_to_dataframe(func, *args, **kwargs):
 
 if __name__ == '__main__':
     # Number of core
-    coreNum = 8
+    n_cores = 8
     
     # Load image
     myImg = '004001_01_01_066'
@@ -66,10 +66,10 @@ if __name__ == '__main__':
     backproj_df, recon = profile_to_dataframe(backproject, filtSino, theta)
     
     # Create Excel file with multiple sheets
-    profiling_script = 'filtbackproj_multicore'
+    profiling_script = 'filtbackproj_multicore_full_parallelization'
     with pd.ExcelWriter(f'data/profiling_result/{myImg}_{profiling_script}.xlsx', engine='openpyxl') as writer:
         getproj_df.to_excel(writer, sheet_name='Forward_Projection', index=False)
         filter_df.to_excel(writer, sheet_name='Filtering', index=False)
         backproj_df.to_excel(writer, sheet_name='Backprojection', index=False)
     
-    print(f"Results saved to data/profiling_result/{myImg}_{profiling_script}.xlsx")
+    print(f"Results saved to data/profiling_result/{myImg}_{profiling_script}_{n_cores}.xlsx")
