@@ -2,9 +2,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image, ImageChops
 from scipy.fftpack import fft, fftshift, ifft
+import time
+
 from joblib import Parallel, delayed
 import multiprocessing
-import time
 
 
 def dummyImg(size0, size1):
