@@ -4,10 +4,13 @@ from PIL import Image, ImageChops
 from scipy.fftpack import fft, fftshift, ifft
 import time
 
-from numba import cuda
+# from numba import cuda
 import cupy as cp
 
-cp.cuda.compiler.clear_cache()
+# Reuse CPU projection from filtbackproj_multicore_full_parallelization.py
+from filtbackproj_multicore_full_parallelization import getProj as getProj_cpu
+import multiprocessing
+
 
 def dummyImg(size0, size1):
     M = np.zeros((size0, size1))
@@ -112,7 +115,7 @@ void backproj_kernel(const float* __restrict__ sino,     // (N, A) flattened row
 
 _backproj_kernel = cp.RawKernel(_backproj_src, "backproj_kernel")
 
-def backProj_gpu(sinogram_np: np.ndarray, theta_deg_np: np.ndarray, n_) -> np.ndarray:
+def backProj_gpu(sinogram_np: np.ndarray, theta_deg_np: np.ndarray) -> np.ndarray:
     """
     GPU backprojection. Accepts NumPy sinogram (N, A) and theta in degrees.
     Returns NumPy (N, N) image (flipped to match your CPU version).
@@ -142,37 +145,38 @@ def backProj_gpu(sinogram_np: np.ndarray, theta_deg_np: np.ndarray, n_) -> np.nd
 
 
 if __name__ == '__main__':
-    start_time = time.perf_counter()
-    # num_cores = multiprocessing.cpu_count()
-    cpu_cores = 1
+    cpu_cores = multiprocessing.cpu_count()
+    # cpu_cores = 1
     print(f"Detected CPU cores: {cpu_cores}")
 
     # myImg = dummyImg(400, 400)
     myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
 
     myImgPad, c0, c1 = padImage(myImg)
-    dTheta = 1
+    dTheta = 0.1
     theta = np.arange(0, 361, dTheta)
 
     print('Getting projections (sequential)...')
-    mySino = getProj(myImgPad, theta, True, n_jobs=cpu_cores)  # CPU
-    # mySino = getProj(myImgPad, theta)  # GPU
-
+    mySino = getProj_cpu(myImgPad, theta, n_jobs=cpu_cores)  # CPU
+    # mySino = getProj(myImgPad, theta, True, n_jobs=cpu_cores)  # GPU
+    
+    start_time = time.perf_counter()
+    
     print('Filtering (parallel)...')
     # filtSino = projFilter(mySino, n_jobs=num_cores)  # CPU
     filtSino = projFilter_gpu(mySino)  # GPU
 
     print('Performing backprojection (parallel)...')
     # recon = backProj(filtSino, theta, n_jobs=num_cores)  # CPU
-    recon = backProj_gpu(filtSino, theta, n_jobs=cpu_cores)  # GPU
+    recon = backProj_gpu(filtSino, theta)  # GPU
+
+    end_time = time.perf_counter()
+    print(f"Execution time: {end_time - start_time:.6f} seconds")
 
     recon2 = np.round((recon - np.min(recon)) / np.ptp(recon) * 255)
     reconImg = Image.fromarray(recon2.astype('uint8'))
     n0, n1 = myImg.size
     reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
-
-    end_time = time.perf_counter()
-    print(f"Execution time: {end_time - start_time:.6f} seconds")
 
     fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
     ax1.imshow(myImg, cmap='gray')
