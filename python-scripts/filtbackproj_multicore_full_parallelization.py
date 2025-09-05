@@ -121,7 +121,6 @@ def backproject(sinogram, theta, n_jobs=None):
 
 
 if __name__ == '__main__':
-    start_time = time.perf_counter()
     num_cores = multiprocessing.cpu_count()
     # num_cores = 2
     print(f"Detected CPU cores: {num_cores}")
@@ -136,19 +135,20 @@ if __name__ == '__main__':
     print('Getting projections (parallel)...')
     mySino = getProj(myImgPad, theta, n_jobs=num_cores)
 
+    start_time = time.perf_counter()
     print('Filtering (parallel)...')
     filtSino = projFilter(mySino, n_jobs=num_cores)
 
     print('Performing backprojection (parallel)...')
     recon = backproject(filtSino, theta, n_jobs=num_cores)
 
+    end_time = time.perf_counter()
+    print(f"Execution time: {end_time - start_time:.6f} seconds")
+
     recon2 = np.round((recon - np.min(recon)) / np.ptp(recon) * 255)
     reconImg = Image.fromarray(recon2.astype('uint8'))
     n0, n1 = myImg.size
     reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
-
-    end_time = time.perf_counter()
-    print(f"Execution time: {end_time - start_time:.6f} seconds")
 
     fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
     ax1.imshow(myImg, cmap='gray')
