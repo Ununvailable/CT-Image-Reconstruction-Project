@@ -221,11 +221,13 @@ def main():
     # Analyze first plastic material
     print("=== PLASTIC MATERIAL 1 ===")
     hsi_reader1 = HSIJPEGReader("data/Plastic HSI/20250905_2122")
+    # hsi_reader1 = HSIJPEGReader("data/Plastic HSI/20250820_2126")
     hsi_cube1 = hsi_reader1.load_hsi_cube()
     
     # Analyze second plastic material  
     print("\n=== PLASTIC MATERIAL 2 ===")
     hsi_reader2 = HSIJPEGReader("data/Plastic HSI/20250905_2123")
+    # hsi_reader2 = HSIJPEGReader("data/Plastic HSI/20250820_2126")
     hsi_cube2 = hsi_reader2.load_hsi_cube()
     
     # Extract average spectra from center regions (no preprocessing)

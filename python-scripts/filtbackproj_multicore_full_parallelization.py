@@ -5,7 +5,7 @@ from scipy.fftpack import fft, fftshift, ifft
 import time
 
 from joblib import Parallel, delayed
-import multiprocessing
+# import multiprocessing
 
 
 def dummyImg(size0, size1):
