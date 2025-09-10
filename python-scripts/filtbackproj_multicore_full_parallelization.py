@@ -5,7 +5,7 @@ from scipy.fftpack import fft, fftshift, ifft
 import time
 
 from joblib import Parallel, delayed
-import multiprocessing
+# import multiprocessing
 
 
 def dummyImg(size0, size1):
@@ -121,8 +121,8 @@ def backproject(sinogram, theta, n_jobs=None):
 
 
 if __name__ == '__main__':
-    num_cores = multiprocessing.cpu_count()
-    # num_cores = 2
+    # num_cores = multiprocessing.cpu_count()
+    num_cores = 1
     print(f"Detected CPU cores: {num_cores}")
 
     # myImg = dummyImg(400, 400)

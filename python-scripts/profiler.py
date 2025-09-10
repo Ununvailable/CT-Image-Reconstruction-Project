@@ -1,12 +1,12 @@
 import cProfile
 import pstats
 import io
+import pandas as pd
+from PIL import Image
 from filtbackproj_multicore_full_parallelization import *
 
-import pandas as pd
-
 def profile_to_dataframe(func, *args, **kwargs):
-    """Profile function and return results as DataFrame"""
+    """Profile a function and return the results as a DataFrame."""
     pr = cProfile.Profile()
     pr.enable()
     result = func(*args, **kwargs)
@@ -21,8 +21,6 @@ def profile_to_dataframe(func, *args, **kwargs):
     # Parse the output (simplified)
     lines = s.getvalue().split('\n')
     data = []
-    
-    # Find the data section
     start_parsing = False
     for line in lines:
         if 'ncalls' in line and 'tottime' in line:
@@ -46,30 +44,45 @@ def profile_to_dataframe(func, *args, **kwargs):
 
 
 if __name__ == '__main__':
-    # Number of core
-    n_cores = 8
+    # Number of cores for parallel processing inside functions
+    n_jobs = 1
     
     # Load image
-    myImg = '004001_01_01_066'
-    myImgPath = Image.open(f'data/phantoms/{myImg}.png').convert('L')
+    myImgName = '004001_01_01_066'
+    myImgPath = Image.open(f'data/phantoms/{myImgName}.png').convert('L')
     myImgPad, c0, c1 = padImage(myImgPath)
-    theta = np.arange(0, 361, 1)
+    theta = np.arange(0, 360.1, 0.1)
     
-    # Profile each function
+    # Profile each function with keyword arguments
     print("Profiling getProj...")
-    getproj_df, mySino = profile_to_dataframe(getProj, myImgPad, theta)
+    getproj_df, mySino = profile_to_dataframe(
+        getProj,
+        img=myImgPad,
+        theta=theta,
+        n_jobs=n_jobs
+    )
     
     print("Profiling projFilter...")
-    filter_df, filtSino = profile_to_dataframe(projFilter, mySino)
+    filter_df, filtSino = profile_to_dataframe(
+        projFilter,
+        sino=mySino,
+        n_jobs=n_jobs
+    )
     
     print("Profiling backproject...")
-    backproj_df, recon = profile_to_dataframe(backproject, filtSino, theta)
+    backproj_df, recon = profile_to_dataframe(
+        backproject,
+        sinogram=filtSino,
+        theta=theta,
+        n_jobs=n_jobs
+    )
     
-    # Create Excel file with multiple sheets
+    # Save profiling results to Excel
     profiling_script = 'filtbackproj_multicore_full_parallelization'
-    with pd.ExcelWriter(f'data/profiling_result/{myImg}_{profiling_script}.xlsx', engine='openpyxl') as writer:
+    output_path = f'data/profiling_result/{myImgName}_{profiling_script}_{n_jobs}_3600.xlsx'
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         getproj_df.to_excel(writer, sheet_name='Forward_Projection', index=False)
         filter_df.to_excel(writer, sheet_name='Filtering', index=False)
         backproj_df.to_excel(writer, sheet_name='Backprojection', index=False)
     
-    print(f"Results saved to data/profiling_result/{myImg}_{profiling_script}_{n_cores}.xlsx")
+    print(f"Results saved to {output_path}")
