@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageChops
 from scipy.fftpack import fft, fftshift, ifft
 import time
+import os
+import glob
+from pathlib import Path
 
 # from numba import cuda
 import cupy as cp
@@ -146,47 +149,106 @@ def backProj_gpu(sinogram_np: np.ndarray, theta_deg_np: np.ndarray) -> np.ndarra
 
 if __name__ == '__main__':
     cpu_cores = multiprocessing.cpu_count()
-    # cpu_cores = 1
     print(f"Detected CPU cores: {cpu_cores}")
 
-    # myImg = dummyImg(400, 400)
-    myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
-
-    myImgPad, c0, c1 = padImage(myImg)
-    dTheta = 0.1
+    # Define input and output folders
+    input_folder = 'data/phantoms/'  # Change this to your input folder
+    output_folder = 'data/reconstructed/'  # Change this to your output folder
+    
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Get all PNG files in the folder
+    image_files = glob.glob(os.path.join(input_folder, '*.png'))
+    
+    if not image_files:
+        print(f"No image files found in {input_folder}")
+        exit()
+    
+    print(f"Found {len(image_files)} image files to process")
+    
+    # Processing parameters
+    dTheta = 1
     theta = np.arange(0, 361, dTheta)
 
-    print('Getting projections (sequential)...')
-    mySino = getProj_cpu(myImgPad, theta, n_jobs=cpu_cores)  # CPU
-    # mySino = getProj(myImgPad, theta, True, n_jobs=cpu_cores)  # GPU
+    # GPU initialization and kernel compilation (warm-up)
+    print("Initializing GPU and compiling kernels...")
+    dummy_sino = cp.ones((256, 180), dtype=cp.float32)
+    dummy_theta = cp.linspace(0, 180, 180, dtype=cp.float32)
     
-    start_time = time.perf_counter()
+    # Warm up projFilter_gpu
+    _ = projFilter_gpu(cp.asnumpy(dummy_sino))
     
-    print('Filtering (parallel)...')
-    # filtSino = projFilter(mySino, n_jobs=num_cores)  # CPU
-    filtSino = projFilter_gpu(mySino)  # GPU
+    # Warm up backProj_gpu (compiles CUDA kernel)
+    _ = backProj_gpu(cp.asnumpy(dummy_sino), cp.asnumpy(dummy_theta))
+    
+    print("GPU initialization complete.")
 
-    print('Performing backprojection (parallel)...')
-    # recon = backProj(filtSino, theta, n_jobs=num_cores)  # CPU
-    recon = backProj_gpu(filtSino, theta)  # GPU
-
-    end_time = time.perf_counter()
-    print(f"Execution time: {end_time - start_time:.6f} seconds")
-
-    recon2 = np.round((recon - np.min(recon)) / np.ptp(recon) * 255)
-    reconImg = Image.fromarray(recon2.astype('uint8'))
-    n0, n1 = myImg.size
-    reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
-
-    fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
-    ax1.imshow(myImg, cmap='gray')
-    ax1.set_title('Original Image')
-    ax2.imshow(reconImg, cmap='gray')
-    ax2.set_title('Filtered Backprojected Image')
-    ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray')
-    ax3.set_title('Error')
-    ax4.imshow(mySino, cmap='gray')
-    ax4.set_title('Captured Sinogram')
-    ax5.imshow(filtSino, cmap='gray')
-    ax5.set_title('Filtered Sinogram')
-    plt.show()
+    
+    # Process each image
+    for i, image_path in enumerate(image_files):
+        print(f"\n--- Processing image {i+1}/{len(image_files)}: {os.path.basename(image_path)} ---")
+        
+        try:
+            # Load and prepare image
+            myImg = Image.open(image_path).convert('L')
+            myImgPad, c0, c1 = padImage(myImg)
+            
+            print('Getting projections (sequential)...')
+            mySino = getProj_cpu(myImgPad, theta, n_jobs=cpu_cores)
+            
+            start_time = time.perf_counter()
+            
+            print('Filtering (parallel)...')
+            filtSino = projFilter_gpu(mySino)
+            
+            print('Performing backprojection (parallel)...')
+            recon = backProj_gpu(filtSino, theta)
+            
+            end_time = time.perf_counter()
+            print(f"Processing time: {end_time - start_time:.6f} seconds")
+            
+            # Post-process and save
+            recon2 = np.round((recon - np.min(recon)) / np.ptp(recon) * 255)
+            reconImg = Image.fromarray(recon2.astype('uint8'))
+            n0, n1 = myImg.size
+            reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
+            
+            # Generate output filename
+            input_filename = Path(image_path).stem
+            output_filename = f"{input_filename}_reconstructed.png"
+            output_path = os.path.join(output_folder, output_filename)
+            
+            # Save reconstructed image
+            reconImg.save(output_path)
+            print(f"Saved reconstructed image: {output_path}")
+            
+            # Optional: Save comparison figure for each image
+            save_comparison = False  # Set to False if you don't want individual comparison plots
+            if save_comparison:
+                fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(12, 4))
+                ax1.imshow(myImg, cmap='gray')
+                ax1.set_title('Original Image')
+                ax1.axis('off')
+                
+                ax2.imshow(reconImg, cmap='gray')
+                ax2.set_title('Reconstructed Image')
+                ax2.axis('off')
+                
+                ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray')
+                ax3.set_title('Error')
+                ax3.axis('off')
+                
+                plt.tight_layout()
+                comparison_path = os.path.join(output_folder, f"{input_filename}_comparison.png")
+                plt.savefig(comparison_path, dpi=150, bbox_inches='tight')
+                plt.close()  # Close to free memory
+                print(f"Saved comparison plot: {comparison_path}")
+                
+        except Exception as e:
+            print(f"Error processing {image_path}: {str(e)}")
+            continue
+    
+    print(f"\n--- Batch processing complete! ---")
+    print(f"Processed {len(image_files)} images")
+    print(f"Results saved in: {output_folder}")
