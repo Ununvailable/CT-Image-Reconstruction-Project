@@ -83,8 +83,9 @@ if __name__ == '__main__':
             print(f"Forward projection time: {end_time - start_time:.6f} seconds")
             
             # Save sinogram and metadata
+            dTheta_str = str(dTheta).replace('.', 'p')
             input_filename = Path(image_path).stem
-            sino_filename = f"{input_filename}_sinogram_{dTheta}.npz"
+            sino_filename = f"{input_filename}_{dTheta_str}_sinogram.npz"
             sino_path = os.path.join(sinogram_folder, sino_filename)
             
             # Save with metadata for reconstruction
