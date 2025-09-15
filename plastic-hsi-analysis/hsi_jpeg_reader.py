@@ -96,7 +96,7 @@ class HSIJPEGReader:
     
     def apply_spectral_preprocessing(self, method='savgol'):
         """
-        Apply spectral preprocessing to reduce noise
+        Apply spectral preprocessing to reduce noise (memory efficient)
         
         Args:
             method: 'savgol', 'moving_average', 'gaussian'
@@ -107,26 +107,43 @@ class HSIJPEGReader:
         if self.hsi_cube is None:
             raise ValueError("HSI cube not loaded. Call load_hsi_cube() first.")
         
-        print(f"Applying {method} preprocessing...")
+        print(f"Applying {method} preprocessing (memory efficient)...")
         
-        processed_cube = np.copy(self.hsi_cube).astype(np.float32)
-        
-        # Vectorized preprocessing - much faster
+        # Process in-place with smaller chunks to save memory
         if method == 'savgol':
-            # Apply Savitzky-Golay along spectral axis
-            processed_cube = savgol_filter(processed_cube, 5, 2, axis=2)
+            # Process chunk by chunk to avoid memory issues
+            chunk_size = 100  # Process 100 spatial lines at a time
+            for i in range(0, self.hsi_cube.shape[0], chunk_size):
+                end_idx = min(i + chunk_size, self.hsi_cube.shape[0])
+                chunk = self.hsi_cube[i:end_idx].astype(np.float32)
+                chunk = savgol_filter(chunk, 5, 2, axis=2)
+                self.hsi_cube[i:end_idx] = chunk.astype(np.uint8)
+                
+                if (i + chunk_size) % 200 == 0:
+                    print(f"Processed {min(i + chunk_size, self.hsi_cube.shape[0])}/{self.hsi_cube.shape[0]} spatial lines")
         
         elif method == 'moving_average':
-            # Simple moving average using convolution
             from scipy.ndimage import uniform_filter1d
-            processed_cube = uniform_filter1d(processed_cube, size=3, axis=2)
+            # Process in chunks
+            chunk_size = 100
+            for i in range(0, self.hsi_cube.shape[0], chunk_size):
+                end_idx = min(i + chunk_size, self.hsi_cube.shape[0])
+                chunk = self.hsi_cube[i:end_idx].astype(np.float32)
+                chunk = uniform_filter1d(chunk, size=3, axis=2)
+                self.hsi_cube[i:end_idx] = chunk.astype(np.uint8)
         
         elif method == 'gaussian':
-            # Gaussian smoothing along spectral axis
-            processed_cube = gaussian_filter1d(processed_cube, sigma=1.0, axis=2)
+            # Process in chunks
+            chunk_size = 100
+            for i in range(0, self.hsi_cube.shape[0], chunk_size):
+                end_idx = min(i + chunk_size, self.hsi_cube.shape[0])
+                chunk = self.hsi_cube[i:end_idx].astype(np.float32)
+                chunk = gaussian_filter1d(chunk, sigma=1.0, axis=2)
+                self.hsi_cube[i:end_idx] = chunk.astype(np.uint8)
         
-        self.hsi_cube = processed_cube
+        # self.hsi_cube = self.hsi_cube
         print("Preprocessing completed!")
+        return self.hsi_cube
     
     def compute_spectral_derivatives(self):
         """
@@ -202,6 +219,32 @@ class HSIJPEGReader:
         
         plt.tight_layout()
         plt.show()
+
+    def extract_spectral_range(self, start_band, end_band):
+        """
+        Extract specific spectral band range from loaded HSI cube
+        
+        Args:
+            start_band: Starting spectral band index
+            end_band: Ending spectral band index
+            
+        Returns:
+            numpy array: HSI cube with reduced spectral dimensions
+        """
+        if self.hsi_cube is None:
+            raise ValueError("HSI cube not loaded. Call load_hsi_cube() first.")
+            
+        print(f"Extracting spectral bands {start_band} to {end_band}")
+        print(f"Original shape: {self.hsi_cube.shape}")
+        
+        # Extract spectral range (3rd dimension)
+        extracted_cube = self.hsi_cube[:, :, start_band:end_band+1]
+        
+        print(f"Extracted shape: {extracted_cube.shape}")
+        
+        # Update the cube
+        self.hsi_cube = extracted_cube
+        return self.hsi_cube
     
     def save_processed_data(self, output_file):
         """
@@ -223,14 +266,18 @@ def main():
     hsi_reader1 = HSIJPEGReader("data/Plastic HSI/20250905_2122")
     # hsi_reader1 = HSIJPEGReader("data/Plastic HSI/20250820_2126")
     hsi_cube1 = hsi_reader1.load_hsi_cube()
+    hsi_reader1.extract_spectral_range(50, 300)
+    hsi_cube1 = hsi_reader1.apply_spectral_preprocessing('gaussian')
     
     # Analyze second plastic material  
     print("\n=== PLASTIC MATERIAL 2 ===")
     hsi_reader2 = HSIJPEGReader("data/Plastic HSI/20250905_2123")
     # hsi_reader2 = HSIJPEGReader("data/Plastic HSI/20250820_2126")
     hsi_cube2 = hsi_reader2.load_hsi_cube()
+    hsi_reader2.extract_spectral_range(50, 300)
+    hsi_cube2 = hsi_reader2.apply_spectral_preprocessing('gaussian')
     
-    # Extract average spectra from center regions (no preprocessing)
+    # Extract average spectra from center regions
     h1, w1 = hsi_cube1.shape[:2]
     h2, w2 = hsi_cube2.shape[:2]
     
