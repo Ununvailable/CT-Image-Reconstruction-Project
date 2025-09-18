@@ -189,6 +189,56 @@ def projFilter_gpu(sino_np: np.ndarray) -> np.ndarray:
 
     return cp.asnumpy(filtSino)
 
+def projFilter_gpu_chunked(sino_np: np.ndarray, chunk_size: int = 100) -> np.ndarray:
+    """GPU version of projFilter with chunked processing to avoid memory issues."""
+    sino_full = cp.asarray(sino_np, dtype=cp.float32)
+    projLen, numAngles = sino_full.shape
+    
+    print(f"Filtering {numAngles} projections in chunks of {chunk_size}")
+    print(f"Projection length: {projLen}, Memory per projection: {projLen * 4 / 1e6:.1f} MB")
+    
+    # Pre-compute filter to avoid recalculating for each chunk
+    a = 0.5
+    step = 2 * np.pi / projLen
+    w = cp.arange(-cp.pi, cp.pi, step, dtype=cp.float32)
+    if w.size < projLen:
+        w = cp.concatenate([w, w[-1:] + step])
+    
+    rn1 = cp.abs(2 / a * cp.sin(a * w / 2))
+    rn2 = cp.sin(a * w / 2) / (a * w / 2)
+    rn2 = cp.nan_to_num(rn2, nan=1.0)
+    r = rn1 * (rn2 ** 2)
+    filt = cp.fft.fftshift(r).astype(cp.complex64)
+    
+    # Process in chunks
+    filtSino = cp.zeros_like(sino_full)
+    
+    for start_idx in tqdm(range(0, numAngles, chunk_size), desc="Filtering chunks"):
+        end_idx = min(start_idx + chunk_size, numAngles)
+        chunk = sino_full[:, start_idx:end_idx].copy()
+        
+        try:
+            # Apply FFT filtering to chunk
+            projfft = cp.fft.fft(chunk, axis=0)
+            filtProj = projfft * filt[:, None]
+            filtChunk = cp.real(cp.fft.ifft(filtProj, axis=0)).astype(cp.float32)
+            
+            filtSino[:, start_idx:end_idx] = filtChunk
+            
+            # Clear chunk memory
+            del chunk, projfft, filtProj, filtChunk
+            cp.get_default_memory_pool().free_all_blocks()
+            
+        except cp.cuda.memory.OutOfMemoryError:
+            print(f"GPU OOM at chunk {start_idx}-{end_idx}, trying smaller chunks...")
+            # Recursively try with smaller chunks
+            smaller_chunk = chunk_size // 2
+            if smaller_chunk < 10:
+                raise RuntimeError("Cannot process even small chunks - insufficient GPU memory")
+            return projFilter_gpu_chunked(sino_np, smaller_chunk)
+    
+    return cp.asnumpy(filtSino)
+
 _backproj_src = r"""
 extern "C" __global__
 void backproj_kernel(const float* __restrict__ sino,
@@ -264,6 +314,58 @@ def volume_denoising_gpu(volume_gpu, iterations=4, p1=0.7, p2=0.03):
         denoised = gaussian_filter(denoised, sigma=p1)
     
     return denoised
+
+def check_gpu_memory():
+    """Check available GPU memory before processing"""
+    mempool = cp.get_default_memory_pool()
+    used = mempool.used_bytes() / 1e9
+    total = mempool.total_bytes() / 1e9
+    free = cp.cuda.Device().mem_info[0] / 1e9
+    
+    print(f"GPU Memory - Used: {used:.2f} GB, Pool Total: {total:.2f} GB, Device Free: {free:.2f} GB")
+    return free
+
+def estimate_memory_requirements(sinogram_shape):
+    # """Estimate memory requirements for reconstruction"""
+    # projLen, numAngles = sinogram_shape
+    
+    # # Sinogram memory (float32)
+    # sino_mem = projLen * numAngles * 4 / 1e9
+    
+    # # FFT temporary memory (complex64) 
+    # fft_temp = projLen * numAngles * 8 / 1e9
+    
+    # # Filter memory
+    # filter_mem = projLen * 8 / 1e6  # Much smaller
+    
+    # # Backprojection output (float32)
+    # backproj_mem = projLen * projLen * 4 / 1e9
+    
+    # total_estimated = sino_mem + fft_temp + backproj_mem
+    
+    # print(f"\nMemory Requirements Estimate:")
+    # print(f"- Sinogram: {sino_mem:.2f} GB")
+    # print(f"- FFT temporary: {fft_temp:.2f} GB") 
+    # print(f"- Backprojection output: {backproj_mem:.2f} GB")
+    # print(f"- Total estimated: {total_estimated:.2f} GB")
+    
+    """Correct memory estimation function"""
+    projLen, numAngles = sinogram_shape
+    
+    # Correct calculations
+    sino_mem = projLen * numAngles * 4 / 1e9  # float32 = 4 bytes
+    fft_temp = projLen * numAngles * 8 / 1e9  # complex64 = 8 bytes
+    backproj_mem = projLen * projLen * 4 / 1e9
+    
+    total_estimated = sino_mem + fft_temp + backproj_mem
+    
+    print(f"\nCORRECTED Memory Requirements:")
+    print(f"- Sinogram ({projLen}×{numAngles}): {sino_mem:.2f} GB")
+    print(f"- FFT temporary: {fft_temp:.2f} GB")
+    print(f"- Backprojection output ({projLen}×{projLen}): {backproj_mem:.2f} GB")
+    print(f"- Total estimated: {total_estimated:.2f} GB")
+    
+    return total_estimated
 
 if __name__ == '__main__':
     # CBCT Configuration from ceraAa.config
@@ -346,10 +448,24 @@ if __name__ == '__main__':
         
         print(f"\n--- Reconstructing Volume ---")
         print(f"Angles: {len(angles)} projections from 0° to {cbct_config['scan_angle']}°")
+
+        # Step 4: Check memory and filter projections
+        print("\n--- Memory Check ---")
+        available_memory = check_gpu_memory()
+        estimated_memory = estimate_memory_requirements(sinogram_np.shape)
         
-        # Step 4: Filter projections
-        print("Filtering sinogram...")
-        filtered_sino = projFilter_gpu(sinogram_np)
+        if estimated_memory > available_memory * 0.8:  # Use 80% as safety margin
+            print(f"WARNING: Estimated memory ({estimated_memory:.2f} GB) exceeds available ({available_memory:.2f} GB)")
+            print("Using chunked processing...")
+            chunk_size = max(10, int(100 * available_memory / estimated_memory))
+            filtered_sino = projFilter_gpu_chunked(sinogram_np, chunk_size)
+        else:
+            print("Sufficient memory available, using standard filtering...")
+            filtered_sino = projFilter_gpu(sinogram_np)
+        
+        # # Step 4 (stuck): Filter projections
+        # print("Filtering sinogram...")
+        # filtered_sino = projFilter_gpu(sinogram_np)
         
         # Step 5: Backprojection
         print("Backprojecting...")
