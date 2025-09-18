@@ -1,4 +1,4 @@
 .vscode/
-.data/Plastic HSI/
-.data/cbct_projections/
-.data/cbct_reconstructed/
+data/Plastic HSI/
+data/cbct_projections/
+data/cbct_reconstructed/
