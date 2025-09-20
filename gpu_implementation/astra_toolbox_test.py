@@ -418,10 +418,10 @@ def main():
         detector_offset_v=1429.4998776624227,
         
         # Reduced settings for memory management
-        volume_size=(512, 512, 512),
+        volume_size=(1024, 1024, 1024),  # Smaller volume
         algorithm="FDK_CUDA",
         projection_batch_size=50,
-        downsample_factor=4,  # Reduce from 2860x2860 to 715x715
+        downsample_factor=2,  # Reduce from 2860x2860 to 1430x1430
         
         # Processing options
         apply_log_correction=True,
