@@ -411,12 +411,13 @@ def main():
         detector_size=(2860, 2860),
         pixel_size_u=0.15,
         pixel_size_v=0.15,
-        voxel_size=0.006134010138512811,
+        # voxel_size=0.006134010138512811,
+        voxel_size=0.01713,  # Increased voxel size for larger FOV
         source_object_dist=28.625365287711134,
         source_detector_dist=699.9996522369905,
-        detector_offset_u=1430.1098329145173,
-        detector_offset_v=1429.4998776624227,
-        
+        detector_offset_u=1430.1098329145173 / 0.01713,
+        detector_offset_v=1429.4998776624227 / 0.01713,
+
         # Reduced settings for memory management
         volume_size=(1024, 1024, 1024),  # Smaller volume
         algorithm="FDK_CUDA",
