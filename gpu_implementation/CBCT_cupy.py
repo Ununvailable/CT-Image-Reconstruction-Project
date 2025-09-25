@@ -45,8 +45,9 @@ class CBCTConfig:
     filter_type: str = 'none'  # 'none', 'ram-lak', 'shepp-logan', 'cosine', 'hamming', 'hann'
     # Saving
     save_intermediate: bool = True
-    intermediate_path: str = "intermediate_results"
-    output_path: str = "cbct_results"
+    input_path: str = "data/20200225_AXI_final_code/slices"
+    intermediate_path: str = "data/20200225_AXI_final_code/intermediate"
+    output_path: str = "data/20200225_AXI_final_code/results"
     # Other
     max_gpu_memory_fraction: float = 0.8
 
@@ -102,7 +103,7 @@ class CBCTPreprocessor:
         CW = 1.0
         if self.config.cosine_weighting:
             # Compute cosine weighting matrix (nv, nu)
-            uu, vv = cp.meshgrid(self.derived['param_us'], self.derived['param_vs'])
+            uu, vv = cp.meshgrid(cp.array(self.derived['param_us']), cp.array(self.derived['param_vs']))
             CW = self.config.source_detector_dist / cp.sqrt((uu ** 2 + vv ** 2) + self.config.source_detector_dist ** 2)
         for i in tqdm(range(nProj), desc="Preprocessing projections"):
             proj = stack[i]
@@ -268,7 +269,7 @@ def main():
     ramp_filter = CBCTRampFilter(config)
     backprojector = CBCTBackprojector(config)
     t0 = time.time()
-    projections = data_loader.load_projection_stack("projection_data")
+    projections = data_loader.load_projection_stack(config.input_path)
     if config.save_intermediate:
         save_pickle(cp.asnumpy(projections), os.path.join(config.intermediate_path, "projections_raw.pickle"))
 
