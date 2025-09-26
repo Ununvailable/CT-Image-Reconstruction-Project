@@ -9,6 +9,7 @@ import pickle
 import glob
 from dataclasses import dataclass, asdict, field
 from typing import Tuple, Dict, Any, Optional, List
+from open_pickled_result import view_pickled_volume_napari
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class CBCTConfig:
     # Voxel/volume setup
     num_voxels: Tuple[int, int, int] = (256, 256, 256)
     volume_size_mm: Tuple[float, float, float] = (0.8, 50.0, 78.0)  # (sx, sy, sz) from main.py
+    # volume_size_mm: Tuple[float, float, float] = (80, 80, 80)  # (sx, sy, sz) from main.py
     # Pixel/detector setup
     detector_pixels: Tuple[int, int] = (625, 512)
     detector_size_mm: Tuple[float, float] = (430.0, 350.0)  # (su, sv) from main.py
@@ -72,24 +74,184 @@ class CBCTConfig:
 class CBCTDataLoader:
     def __init__(self, config: CBCTConfig):
         self.config = config
+        
+    def _load_raw_file(self, filepath: str, shape: Tuple[int, int], dtype: str = 'uint16') -> np.ndarray:
+        """Load RAW binary file with specified dimensions and data type"""
+        dtype_map = {
+            'uint8': (np.uint8, 1),
+            'uint16': (np.uint16, 2), 
+            'uint32': (np.uint32, 4),
+            'float32': (np.float32, 4),
+            'float64': (np.float64, 8)
+        }
+        
+        if dtype not in dtype_map:
+            raise ValueError(f"Unsupported dtype: {dtype}")
+            
+        np_dtype, bytes_per_pixel = dtype_map[dtype]
+        expected_size = shape[0] * shape[1] * bytes_per_pixel
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"RAW file not found: {filepath}")
+            
+        file_size = os.path.getsize(filepath)
+        if file_size != expected_size:
+            logger.warning(f"RAW file size mismatch: {filepath} "
+                         f"(expected {expected_size}, got {file_size} bytes)")
+        
+        try:
+            with open(filepath, 'rb') as f:
+                data = np.frombuffer(f.read(), dtype=np_dtype)
+                return data.reshape(shape).astype(np.float32)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load RAW file {filepath}: {e}")
+    
+    def _load_tiff_file(self, filepath: str) -> np.ndarray:
+        """Load TIFF file using tifffile for better format support"""
+        try:
+            # Try tifffile first (handles multi-page, various formats)
+            data = tifffile.imread(filepath)
+            if data.ndim == 3 and data.shape[0] == 1:
+                data = data.squeeze(0)  # Remove singleton dimension
+            return data.astype(np.float32)
+        except Exception as e1:
+            try:
+                # Fallback to PIL
+                with Image.open(filepath) as img:
+                    return np.array(img.convert("F"))
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load TIFF {filepath}. "
+                                 f"tifffile error: {e1}, PIL error: {e2}")
+    
+    def _load_image_file(self, filepath: str) -> np.ndarray:
+        """Load standard image formats (PNG, JPG, etc.)"""
+        try:
+            with Image.open(filepath) as img:
+                return np.array(img.convert("F"))
+        except Exception as e:
+            raise RuntimeError(f"Failed to load image {filepath}: {e}")
+    
+    def _load_single_projection(self, filepath: str, 
+                              raw_shape: Optional[Tuple[int, int]] = None,
+                              raw_dtype: str = 'uint16') -> np.ndarray:
+        """Load a single projection file based on extension"""
+        ext = os.path.splitext(filepath)[1].lower()
+        
+        if ext == '.raw':
+            if raw_shape is None:
+                raise ValueError("raw_shape must be specified for RAW files")
+            return self._load_raw_file(filepath, raw_shape, raw_dtype)
+        elif ext in ['.tiff', '.tif']:
+            return self._load_tiff_file(filepath)
+        elif ext in ['.png', '.jpg', '.jpeg']:
+            return self._load_image_file(filepath)
+        else:
+            raise ValueError(f"Unsupported file format: {ext}")
 
-    def load_projection_stack(self, folder: str) -> cp.ndarray:
+    def load_projection_stack(self, folder: str, 
+                            raw_shape: Optional[Tuple[int, int]] = None,
+                            raw_dtype: str = 'uint16') -> cp.ndarray:
+        """
+        Load projection stack from various formats
+        
+        Parameters:
+        -----------
+        folder : str
+            Directory containing projection files
+        raw_shape : Tuple[int, int], optional
+            Shape (height, width) for RAW files
+        raw_dtype : str, default 'uint16'
+            Data type for RAW files ('uint8', 'uint16', 'uint32', 'float32', 'float64')
+        """
         files = discover_projection_files(folder)
+        
+        if len(files) == 0:
+            raise RuntimeError(f"No projection files found in {folder}")
+            
         if len(files) < self.config.num_projections:
-            raise RuntimeError(f"Not enough projection files found in {folder} ({len(files)} found, "
-                               f"{self.config.num_projections} required)")
-        files = files[:self.config.num_projections]
-        # Use PIL to load images, convert to float32, stack to (num_projections, nv, nu)
-        logger.info(f"Loading {len(files)} projection images...")
+            logger.warning(f"Found {len(files)} files, but config expects {self.config.num_projections}. "
+                          f"Using available files.")
+            
+        # Use available files, up to configured limit
+        files_to_use = files[:self.config.num_projections]
+        
+        logger.info(f"Loading {len(files_to_use)} projection files from {folder}")
+        logger.info(f"File format: {os.path.splitext(files_to_use[0])[1]}")
+        
+        # Load first file to determine dimensions
+        first_proj = self._load_single_projection(files_to_use[0], raw_shape, raw_dtype)
+        expected_shape = self.config.detector_pixels[::-1]  # (height, width)
+        
+        if first_proj.shape != expected_shape:
+            logger.warning(f"Projection shape {first_proj.shape} doesn't match "
+                          f"config {expected_shape}. Will resize if needed.")
+        
+        # Pre-allocate array
         imgs = []
-        for f in tqdm(files, desc="Loading projections"):
-            im = np.array(Image.open(f).convert("F"))
-            if im.shape != self.config.detector_pixels[::-1]:  # PIL loads as (height, width)
-                raise ValueError(f"Projection image {f} has incorrect shape {im.shape}, expected {self.config.detector_pixels[::-1]}")
-            imgs.append(im)
-        arr = np.stack(imgs, axis=0)  # (nProj, nv, nu)
-        arr = cp.array(arr, dtype=cp.float32)
-        return arr  # (nProj, nv, nu)
+        
+        # Load all projections
+        for filepath in tqdm(files_to_use, desc="Loading projections"):
+            try:
+                proj = self._load_single_projection(filepath, raw_shape, raw_dtype)
+                
+                # Resize if needed
+                if proj.shape != expected_shape:
+                    from PIL import Image as PILImage
+                    proj_pil = PILImage.fromarray(proj).resize(
+                        (expected_shape[1], expected_shape[0]), 
+                        PILImage.LANCZOS
+                    )
+                    proj = np.array(proj_pil, dtype=np.float32)
+                
+                imgs.append(proj)
+                
+            except Exception as e:
+                logger.error(f"Failed to load {filepath}: {e}")
+                raise
+        
+        # Stack and transfer to GPU
+        stack = np.stack(imgs, axis=0)  # (nProj, height, width)
+        logger.info(f"Loaded projection stack shape: {stack.shape}")
+        
+        return cp.array(stack, dtype=cp.float32)
+    
+    def load_raw_dataset_info(self, info_file: str) -> Dict[str, Any]:
+        """
+        Load RAW dataset information from metadata file
+        
+        Expected format (JSON or simple key=value):
+        {
+            "width": 512,
+            "height": 625,
+            "dtype": "uint16",
+            "num_projections": 360,
+            "angle_increment": 1.0
+        }
+        """
+        import json
+        
+        if not os.path.exists(info_file):
+            logger.warning(f"Info file not found: {info_file}")
+            return {}
+            
+        try:
+            with open(info_file, 'r') as f:
+                if info_file.endswith('.json'):
+                    return json.load(f)
+                else:
+                    # Simple key=value format
+                    info = {}
+                    for line in f:
+                        if '=' in line:
+                            key, value = line.strip().split('=', 1)
+                            try:
+                                info[key.strip()] = eval(value.strip())
+                            except:
+                                info[key.strip()] = value.strip()
+                    return info
+        except Exception as e:
+            logger.warning(f"Failed to load dataset info from {info_file}: {e}")
+            return {}  # (nProj, nv, nu)
 
 class CBCTPreprocessor:
     def __init__(self, config: CBCTConfig):
@@ -179,74 +341,183 @@ class CBCTBackprojector:
     def __init__(self, config: CBCTConfig):
         self.config = config
         self.derived = config.derived()
+        self._compile_backprojection_kernel()
+        self._warmup_gpu()
+
+    def _compile_backprojection_kernel(self):
+        kernel_source = r"""
+        extern "C" __global__
+        void backproj_kernel(const float* __restrict__ filtered,
+                            float* __restrict__ volume,
+                            const float* __restrict__ param_us,
+                            const float* __restrict__ param_vs,
+                            const float* __restrict__ param_xs,
+                            const float* __restrict__ param_ys,
+                            const float* __restrict__ param_zs,
+                            const float* __restrict__ angle_rads,
+                            const int nProj, const int nv, const int nu,
+                            const int nx, const int ny, const int nz,
+                            const float param_du, const float param_dv,
+                            const float param_DSD, const float param_DSO)
+        {
+            int x = blockDim.x * blockIdx.x + threadIdx.x;
+            int y = blockDim.y * blockIdx.y + threadIdx.y;
+            int z = blockDim.z * blockIdx.z + threadIdx.z;
+            
+            if (x >= nx || y >= ny || z >= nz) return;
+            
+            float xx = param_xs[x];
+            float yy = param_ys[y];
+            float zz = param_zs[z];
+            float us_0 = param_us[0];
+            float vs_0 = param_vs[0];
+            
+            float acc = 0.0f;
+            
+            for (int proj_idx = 0; proj_idx < nProj; proj_idx++) {
+                float angle = angle_rads[proj_idx];
+                float r_cos = cosf(angle);
+                float r_sin = sinf(angle);
+                
+                float rx = xx * r_cos + yy * r_sin;
+                float ry = -xx * r_sin + yy * r_cos;
+                
+                float pu = (rx * param_DSD / (ry + param_DSO) + us_0) / (-param_du);
+                float pv = (zz * param_DSD / (ry + param_DSO) - vs_0) / param_dv;
+                
+                // Bounds check
+                if (pu <= 0 || pu >= nu || pv <= 0 || pv >= nv) continue;
+                
+                float Ratio = param_DSO * param_DSO / ((param_DSO + ry) * (param_DSO + ry));
+                
+                // Bilinear interpolation
+                int pu_0 = (int)floorf(pu);
+                int pu_1 = pu_0 + 1;
+                int pv_0 = (int)floorf(pv);
+                int pv_1 = pv_0 + 1;
+                
+                pu_0 = max(0, min(pu_0, nu - 1));
+                pu_1 = max(0, min(pu_1, nu - 1));
+                pv_0 = max(0, min(pv_0, nv - 1));
+                pv_1 = max(0, min(pv_1, nv - 1));
+                
+                float x1_x = pu_1 - pu;
+                float x_x0 = pu - pu_0;
+                float y1_y = pv_1 - pv;
+                float y_y0 = pv - pv_0;
+                
+                float wa = x1_x * y1_y;
+                float wb = x1_x * y_y0;
+                float wc = x_x0 * y1_y;
+                float wd = x_x0 * y_y0;
+                
+                int base_idx = proj_idx * nv * nu;
+                float Ia = filtered[base_idx + pv_0 * nu + pu_0];
+                float Ib = filtered[base_idx + pv_1 * nu + pu_0];
+                float Ic = filtered[base_idx + pv_0 * nu + pu_1];
+                float Id = filtered[base_idx + pv_1 * nu + pu_1];
+                
+                float interpolated = Ia * wa + Ib * wb + Ic * wc + Id * wd;
+                acc += Ratio * interpolated;
+            }
+            
+            volume[z * nx * ny + y * nx + x] = acc;
+        }
+        """
+        self.backproj_kernel = cp.RawKernel(kernel_source, "backproj_kernel")
+    
+    def _warmup_gpu(self):
+        """Perform GPU warmup to initialize CUDA context and compile kernel"""
+        logger.info("Performing GPU warmup...")
+        try:
+            # Create small dummy data matching expected input format
+            dummy_nProj, dummy_nv, dummy_nu = 4, 32, 32
+            dummy_nx, dummy_ny, dummy_nz = 16, 16, 16
+            
+            # Create minimal test arrays
+            dummy_filtered = cp.ones((dummy_nProj, dummy_nv, dummy_nu), dtype=cp.float32)
+            dummy_volume = cp.zeros((dummy_nz, dummy_ny, dummy_nx), dtype=cp.float32)
+            dummy_us = cp.linspace(-1, 1, dummy_nu, dtype=cp.float32)
+            dummy_vs = cp.linspace(-1, 1, dummy_nv, dtype=cp.float32)
+            dummy_xs = cp.linspace(-1, 1, dummy_nx, dtype=cp.float32)
+            dummy_ys = cp.linspace(-1, 1, dummy_ny, dtype=cp.float32)
+            dummy_zs = cp.linspace(-1, 1, dummy_nz, dtype=cp.float32)
+            dummy_angles = cp.linspace(0, cp.pi, dummy_nProj, dtype=cp.float32)
+            
+            # Launch warmup kernel with minimal grid
+            block_size = (4, 4, 4)
+            grid_size = ((dummy_nx + 3) // 4, (dummy_ny + 3) // 4, (dummy_nz + 3) // 4)
+            
+            self.backproj_kernel(
+                grid_size, block_size,
+                (dummy_filtered.ravel(),
+                 dummy_volume.ravel(),
+                 dummy_us, dummy_vs, dummy_xs, dummy_ys, dummy_zs,
+                 dummy_angles,
+                 cp.int32(dummy_nProj), cp.int32(dummy_nv), cp.int32(dummy_nu),
+                 cp.int32(dummy_nx), cp.int32(dummy_ny), cp.int32(dummy_nz),
+                 cp.float32(1.0), cp.float32(1.0),  # dummy du, dv
+                 cp.float32(100.0), cp.float32(50.0))  # dummy DSD, DSO
+            )
+            
+            cp.cuda.Device().synchronize()
+            logger.info("GPU warmup completed successfully")
+            
+        except Exception as e:
+            logger.warning(f"GPU warmup failed: {e}")
+            # Continue execution - warmup failure shouldn't stop the pipeline
 
     def backproject(self, filtered: cp.ndarray) -> np.ndarray:
-        # Implementation closely follows main.py's backprojection
+        logger.info("Starting CUDA-accelerated backprojection")
         nProj, nv, nu = filtered.shape
         nx, ny, nz = self.config.num_voxels
-        param_us = cp.array(self.derived['param_us'])
-        param_vs = cp.array(self.derived['param_vs'])
-        param_xs = cp.array(self.derived['param_xs'])
-        param_ys = cp.array(self.derived['param_ys'])
-        param_zs = cp.array(self.derived['param_zs'])
-        param_du = self.derived['param_du']
-        param_dv = self.derived['param_dv']
-        param_DSD = self.config.source_detector_dist
-        param_DSO = self.config.source_origin_dist
-
+        
+        # Prepare GPU arrays from derived parameters
+        param_us = cp.array(self.derived['param_us'], dtype=cp.float32)
+        param_vs = cp.array(self.derived['param_vs'], dtype=cp.float32)
+        param_xs = cp.array(self.derived['param_xs'], dtype=cp.float32)
+        param_ys = cp.array(self.derived['param_ys'], dtype=cp.float32)
+        param_zs = cp.array(self.derived['param_zs'], dtype=cp.float32)
+        
+        # Angle computation
         angle_step = self.config.angle_step
-        nProj = filtered.shape[0]
-        angle_rads = cp.array([np.pi * (i * angle_step / 180 - 0.5) for i in range(nProj)])
-
-        r_cos_ls = cp.cos(angle_rads)[:, cp.newaxis, cp.newaxis]
-        r_sin_ls = cp.sin(angle_rads)[:, cp.newaxis, cp.newaxis]
-        xx, yy = cp.meshgrid(param_xs, param_ys)
-        xx = cp.repeat(xx[cp.newaxis, ...], nProj, axis=0)
-        yy = cp.repeat(yy[cp.newaxis, ...], nProj, axis=0)
-        rx_ls = xx * r_cos_ls + yy * r_sin_ls
-        ry_ls = -xx * r_sin_ls + yy * r_cos_ls
-        pu_ls = (rx_ls * param_DSD / (ry_ls + param_DSO) + param_us[0]) / (-param_du)
-        Ratio_ls = param_DSO ** 2 / (param_DSO + ry_ls) ** 2
-
-        pu_ls_0 = cp.floor(pu_ls)
-        pu_ls_1 = pu_ls_0 + 1
-        pu_ls_0 = cp.clip(pu_ls_0, 0, nu - 1)
-        pu_ls_1 = cp.clip(pu_ls_1, 0, nu - 1)
-        pu_ls_0_int = pu_ls_0.astype(cp.int32)
-        pu_ls_1_int = pu_ls_1.astype(cp.int32)
-        x1_x = pu_ls_1 - pu_ls
-        x_x0 = pu_ls - pu_ls_0
-        cond_0 = (pu_ls <= 0) + (pu_ls >= nu)
-        vols = []
-
-        for i in tqdm(range(nz), desc="Backprojecting"):
-            var1 = param_DSD / (ry_ls + param_DSO)
-            var2 = param_vs[0]
-            pv_ls = ((param_zs[i] * var1 - var2) / param_dv)
-            pv_ls_0 = cp.floor(pv_ls)
-            pv_ls_1 = pv_ls_0 + 1
-            pv_ls_0 = cp.clip(pv_ls_0, 0, nv - 1)
-            pv_ls_1 = cp.clip(pv_ls_1, 0, nv - 1)
-            pv_ls_0_int = pv_ls_0.astype(cp.int32)
-            pv_ls_1_int = pv_ls_1.astype(cp.int32)
-            y1_y = pv_ls_1 - pv_ls
-            y_y0 = pv_ls - pv_ls_0
-            wa = x1_x * y1_y
-            wb = x1_x * y_y0
-            wc = x_x0 * y1_y
-            wd = x_x0 * y_y0
-            cond_1 = (pv_ls <= 0) + (pv_ls >= nv)
-            cond = (cond_0 + cond_1) == False
-
-            Ia = cp.array([filtered[t][pv_ls_0_int[t], pu_ls_0_int[t]] for t in range(nProj)])
-            Ib = cp.array([filtered[t][pv_ls_1_int[t], pu_ls_0_int[t]] for t in range(nProj)])
-            Ic = cp.array([filtered[t][pv_ls_0_int[t], pu_ls_1_int[t]] for t in range(nProj)])
-            Id = cp.array([filtered[t][pv_ls_1_int[t], pu_ls_1_int[t]] for t in range(nProj)])
-
-            k = cp.sum(Ratio_ls * cond * (Ia * wa + Ib * wb + Ic * wc + Id * wd), axis=0)
-            vols.append(k)
-        vols = cp.array(vols)
-        return cp.asnumpy(vols)
+        angle_rads = cp.array([np.pi * (i * angle_step / 180 - 0.5) for i in range(nProj)], 
+                             dtype=cp.float32)
+        
+        # Initialize volume
+        volume = cp.zeros((nz, ny, nx), dtype=cp.float32)
+        
+        # Prepare filtered projections - reshape to (nProj, nv, nu) contiguous
+        filtered_contiguous = cp.ascontiguousarray(filtered)
+        
+        # Launch kernel
+        block_size = (8, 8, 8)
+        grid_size = ((nx + block_size[0] - 1) // block_size[0],
+                     (ny + block_size[1] - 1) // block_size[1],
+                     (nz + block_size[2] - 1) // block_size[2])
+        
+        try:
+            self.backproj_kernel(
+                grid_size, block_size,
+                (filtered_contiguous.ravel(),
+                 volume.ravel(),
+                 param_us, param_vs, param_xs, param_ys, param_zs,
+                 angle_rads,
+                 cp.int32(nProj), cp.int32(nv), cp.int32(nu),
+                 cp.int32(nx), cp.int32(ny), cp.int32(nz),
+                 cp.float32(self.derived['param_du']),
+                 cp.float32(self.derived['param_dv']),
+                 cp.float32(self.config.source_detector_dist),
+                 cp.float32(self.config.source_origin_dist))
+            )
+            cp.cuda.Device().synchronize()
+            
+        except Exception as e:
+            logger.error(f"CUDA backprojection kernel failed: {e}")
+            raise
+            
+        logger.info(f"CUDA backprojection completed, volume shape: {volume.shape}")
+        return cp.asnumpy(volume)
 
 def save_pickle(data, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -295,3 +566,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    view_pickled_volume_napari(path='data/20200225_AXI_final_code/results/volume.pickle')
