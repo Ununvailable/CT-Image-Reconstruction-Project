@@ -2,11 +2,13 @@ import numpy as np
 import os
 import time
 import cupy as cp
+import json
 from PIL import Image
 from tqdm import tqdm
 import logging
 import pickle
 import glob
+import tifffile
 from dataclasses import dataclass, asdict, field
 from typing import Tuple, Dict, Any, Optional, List
 from open_pickled_result import view_pickled_volume_napari
@@ -19,61 +21,226 @@ def discover_projection_files(folder: str, allowed_exts=(".tiff", ".tif", ".jpg"
     files = [f for f in sorted(glob.glob(pattern)) if os.path.splitext(f)[1].lower() in allowed_exts]
     return files
 
+"""
+Example metadata.json file structure:
+{
+    "name": "Small_CBCT_Dataset",
+    "num_projections": 36,
+    "detector_pixels": [3052, 2500],
+    "detector_size_mm": [430.0, 350.0],
+    "detector_offset": [0.0, 0.0],
+    "volume_voxels": [256, 256, 256],
+    "volume_size_mm": [20.0, 20.0, 86.0],
+    "source_origin_dist": 150.0,
+    "source_detector_dist": 600.0,
+    "angle_step": 10.0,
+    "start_angle": 0.0,
+    "projection_dtype": "uint16",
+    "file_format": "jpg",
+    "cosine_weighting": true,
+    "filter_type": "none",
+    "apply_log_correction": false,
+    "apply_bad_pixel_correction": false,
+    "apply_noise_reduction": false,
+    "apply_truncation_correction": false,
+    "truncation_width": 0,
+    "dark_current": 0.0,
+    "max_gpu_memory_fraction": 0.8,
+    "save_intermediate": true
+}
+"""
+
 @dataclass
 class CBCTConfig:
     # Voxel/volume setup
     num_voxels: Tuple[int, int, int] = (256, 256, 256)
-    volume_size_mm: Tuple[float, float, float] = (0.8, 50.0, 78.0)  # (sx, sy, sz) from main.py
-    # volume_size_mm: Tuple[float, float, float] = (80, 80, 80)  # (sx, sy, sz) from main.py
+    volume_size_mm: Tuple[float, float, float] = (0.8, 50.0, 78.0)
+    
     # Pixel/detector setup
-    detector_pixels: Tuple[int, int] = (625, 512)
-    detector_size_mm: Tuple[float, float] = (430.0, 350.0)  # (su, sv) from main.py
+    detector_pixels: Tuple[int, int] = (2860, 2860)
+    detector_size_mm: Tuple[float, float] = (430.0, 350.0)
     detector_offset: Tuple[float, float] = (0.0, 0.0)
+    
     # Acquisition geometry
     num_projections: int = 360
     angle_step: float = 1.0
-    source_origin_dist: float = 212.515  # mm (DSO)
-    source_detector_dist: float = 1304.5  # mm (DSD)
+    source_origin_dist: float = 212.515
+    source_detector_dist: float = 1304.5
+    
     # Preprocessing
     cosine_weighting: bool = True
-    dark_current: float = 0.0
+    dark_current: float = 20.0
     bad_pixel_threshold: Optional[int] = None
-    apply_log_correction: bool = False
+    apply_log_correction: bool = True
     apply_bad_pixel_correction: bool = False
     apply_noise_reduction: bool = False
     apply_truncation_correction: bool = False
     truncation_width: int = 0
+    
     # Filtering
-    filter_type: str = 'none'  # 'none', 'ram-lak', 'shepp-logan', 'cosine', 'hamming', 'hann'
+    filter_type: str = 'none'
+    
     # Saving
     save_intermediate: bool = True
-    input_path: str = "data/20200225_AXI_final_code/slices"
+    input_path: str = r"data\\20200225_AXI_final_code\\slices\\"
     intermediate_path: str = "data/20200225_AXI_final_code/intermediate"
     output_path: str = "data/20200225_AXI_final_code/results"
+    
     # Other
     max_gpu_memory_fraction: float = 0.8
+    
+    # Internal state
+    _derived_cache: Optional[Dict[str, Any]] = None
+    _metadata_loaded: bool = False
+
+    @classmethod
+    def create_with_metadata(cls, folder: str, metadata_filename: str = "metadata.json") -> 'CBCTConfig':
+        """
+        Create CBCTConfig by loading metadata from folder.
+        This is the primary way to create a config with metadata.
+        """
+        metadata_path = os.path.join(folder, metadata_filename)
+        
+        # Start with defaults
+        config = cls()
+        config.input_path = folder
+        
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                
+                config._apply_metadata(metadata)
+                config._metadata_loaded = True
+                
+                logger.info(f"✓ Loaded metadata from {metadata_path}")
+                logger.info(f"Dataset: {metadata.get('name', 'Unknown')}")
+                logger.info(f"Config - Projections: {config.num_projections}, "
+                          f"Detector: {config.detector_pixels}, "
+                          f"Volume: {config.num_voxels}")
+                
+            except Exception as e:
+                logger.error(f"✗ Failed to load metadata from {metadata_path}: {e}")
+                raise RuntimeError(f"Critical: Could not load required metadata from {metadata_path}")
+        else:
+            logger.warning(f"⚠ No metadata file found at {metadata_path}")
+            logger.warning("Using default configuration values")
+            logger.info(f"Defaults - Projections: {config.num_projections}, "
+                       f"Detector: {config.detector_pixels}, "
+                       f"Volume: {config.num_voxels}")
+        
+        return config
+
+    def _apply_metadata(self, metadata: dict) -> None:
+        """Apply metadata values to current config instance"""
+        # Volume setup
+        if 'volume_voxels' in metadata:
+            self.num_voxels = tuple(metadata['volume_voxels'])
+        if 'volume_size_mm' in metadata:
+            self.volume_size_mm = tuple(metadata['volume_size_mm'])
+            
+        # Detector setup
+        if 'detector_pixels' in metadata:
+            self.detector_pixels = tuple(metadata['detector_pixels'])
+        if 'detector_size_mm' in metadata:
+            self.detector_size_mm = tuple(metadata['detector_size_mm'])
+        if 'detector_offset' in metadata:
+            self.detector_offset = tuple(metadata['detector_offset'])
+            
+        # Acquisition geometry
+        if 'num_projections' in metadata:
+            self.num_projections = metadata['num_projections']
+        if 'angle_step' in metadata:
+            self.angle_step = metadata['angle_step']
+        if 'source_origin_dist' in metadata:
+            self.source_origin_dist = metadata['source_origin_dist']
+        if 'source_detector_dist' in metadata:
+            self.source_detector_dist = metadata['source_detector_dist']
+            
+        # Preprocessing
+        if 'cosine_weighting' in metadata:
+            self.cosine_weighting = metadata['cosine_weighting']
+        if 'dark_current' in metadata:
+            self.dark_current = metadata['dark_current']
+        if 'apply_log_correction' in metadata:
+            self.apply_log_correction = metadata['apply_log_correction']
+        if 'apply_bad_pixel_correction' in metadata:
+            self.apply_bad_pixel_correction = metadata['apply_bad_pixel_correction']
+        if 'apply_noise_reduction' in metadata:
+            self.apply_noise_reduction = metadata['apply_noise_reduction']
+        if 'apply_truncation_correction' in metadata:
+            self.apply_truncation_correction = metadata['apply_truncation_correction']
+        if 'truncation_width' in metadata:
+            self.truncation_width = metadata['truncation_width']
+            
+        # Filtering
+        if 'filter_type' in metadata:
+            self.filter_type = metadata['filter_type']
+            
+        # Processing options
+        if 'save_intermediate' in metadata:
+            self.save_intermediate = metadata['save_intermediate']
+        if 'max_gpu_memory_fraction' in metadata:
+            self.max_gpu_memory_fraction = metadata['max_gpu_memory_fraction']
+        
+        # Clear derived cache when config changes
+        self._derived_cache = None
+
+    @classmethod
+    def from_metadata(cls, metadata: dict) -> 'CBCTConfig':
+        """
+        DEPRECATED: Use create_with_metadata() instead.
+        Legacy method kept for backward compatibility.
+        """
+        logger.warning("from_metadata() is deprecated. Use create_with_metadata() instead.")
+        config = cls()
+        config._apply_metadata(metadata)
+        config._metadata_loaded = True
+        return config
 
     def derived(self) -> Dict[str, Any]:
-        # Compute derived parameters similar to main.py, for snapshotting
-        nx, ny, nz = self.num_voxels
-        sx, sy, sz = self.volume_size_mm
-        nu, nv = self.detector_pixels
-        su, sv = self.detector_size_mm
-        dx, dy, dz = sx / nx, sy / ny, sz / nz
-        du, dv = su / nu, sv / nv
-        return {
-            'param_dx': dx, 'param_dy': dy, 'param_dz': dz,
-            'param_du': du, 'param_dv': dv,
-            'param_us': np.arange((-nu/2 + 0.5), (nu/2), 1) * du + self.detector_offset[0],
-            'param_vs': np.arange((-nv/2 + 0.5), (nv/2), 1) * dv + self.detector_offset[1],
-            'param_xs': np.arange((-nx/2 + 0.5), (nx/2), 1) * dx,
-            'param_ys': np.arange((-ny/2 + 0.5), (ny/2), 1) * dy,
-            'param_zs': np.arange((-nz/2 + 0.5), (nz/2), 1) * dz,
-        }
+        """
+        Compute and cache derived parameters.
+        Cache is invalidated when config changes.
+        """
+        if self._derived_cache is None:
+            nx, ny, nz = self.num_voxels
+            sx, sy, sz = self.volume_size_mm
+            nu, nv = self.detector_pixels
+            su, sv = self.detector_size_mm
+            dx, dy, dz = sx / nx, sy / ny, sz / nz
+            du, dv = su / nu, sv / nv
+            
+            self._derived_cache = {
+                'param_dx': dx, 'param_dy': dy, 'param_dz': dz,
+                'param_du': du, 'param_dv': dv,
+                'param_us': np.arange((-nu/2 + 0.5), (nu/2), 1) * du + self.detector_offset[0],
+                'param_vs': np.arange((-nv/2 + 0.5), (nv/2), 1) * dv + self.detector_offset[1],
+                'param_xs': np.arange((-nx/2 + 0.5), (nx/2), 1) * dx,
+                'param_ys': np.arange((-ny/2 + 0.5), (ny/2), 1) * dy,
+                'param_zs': np.arange((-nz/2 + 0.5), (nz/2), 1) * dz,
+            }
+        
+        return self._derived_cache
+
+    def has_metadata(self) -> bool:
+        """Check if metadata was successfully loaded"""
+        return self._metadata_loaded
+
+    def invalidate_cache(self) -> None:
+        """Force recalculation of derived parameters on next access"""
+        self._derived_cache = None
+
 
 class CBCTDataLoader:
     def __init__(self, config: CBCTConfig):
         self.config = config
+        
+    @classmethod
+    def from_folder(cls, folder: str, metadata_filename: str = "metadata.json") -> 'CBCTDataLoader':
+        """Create CBCTDataLoader with metadata-aware config"""
+        config = CBCTConfig.create_with_metadata(folder, metadata_filename)
+        return cls(config)
         
     def _load_raw_file(self, filepath: str, shape: Tuple[int, int], dtype: str = 'uint16') -> np.ndarray:
         """Load RAW binary file with specified dimensions and data type"""
@@ -139,7 +306,7 @@ class CBCTDataLoader:
         
         if ext == '.raw':
             if raw_shape is None:
-                raise ValueError("raw_shape must be specified for RAW files")
+                raw_shape = self.config.detector_pixels[::-1]  # Use config detector size
             return self._load_raw_file(filepath, raw_shape, raw_dtype)
         elif ext in ['.tiff', '.tif']:
             return self._load_tiff_file(filepath)
@@ -148,48 +315,114 @@ class CBCTDataLoader:
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 
-    def load_projection_stack(self, folder: str, 
-                            raw_shape: Optional[Tuple[int, int]] = None,
-                            raw_dtype: str = 'uint16') -> cp.ndarray:
+    # def load_projection_stack(self, folder: Optional[str] = None) -> 'cp.ndarray':
+    #     """
+    #     Load projection stack using the established config.
+    #     No longer reloads metadata - config is immutable after creation.
+    #     """
+    #     if folder is None:
+    #         folder = self.config.input_path
+            
+    #     # Validate that we're using the expected folder
+    #     if folder != self.config.input_path and self.config.has_metadata():
+    #         logger.warning(f"Loading from {folder} but metadata was loaded from {self.config.input_path}")
+        
+    #     # Rest of loading logic remains the same, but uses self.config consistently
+    #     files = discover_projection_files(folder)
+        
+    #     if len(files) != self.config.num_projections:
+    #         logger.warning(f"⚠ Found {len(files)} files, config expects {self.config.num_projections}")
+            
+    #     files_to_use = files[:self.config.num_projections]
+    #     logger.info(f"Loading {len(files_to_use)} projection files using established config")
+
+
+    def load_projection_stack(self, folder: Optional[str] = None, 
+                            metadata_filename: str = "metadata.json") -> cp.ndarray:
         """
-        Load projection stack from various formats
+        Load projection stack from folder with JSON metadata
         
         Parameters:
         -----------
-        folder : str
-            Directory containing projection files
-        raw_shape : Tuple[int, int], optional
-            Shape (height, width) for RAW files
-        raw_dtype : str, default 'uint16'
-            Data type for RAW files ('uint8', 'uint16', 'uint32', 'float32', 'float64')
+        folder : str, optional
+            Directory containing projection files and JSON metadata. If None, uses config.input_path
+        metadata_filename : str, default "metadata.json"
+            Name of the JSON metadata file in the folder
         """
+        # Use config path if folder not provided
+        if folder is None:
+            folder = self.config.input_path
+            
+        # Load and apply metadata from folder
+        metadata_path = os.path.join(folder, metadata_filename)
+        
+        if os.path.exists(metadata_path):
+            try:
+                import json
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                
+                # Update configuration with metadata values
+                updated_config = CBCTConfig.from_metadata(metadata)
+                updated_config.input_path = folder  # Preserve the folder path
+                self.config = updated_config
+                
+                logger.info(f"Loaded and applied metadata from {metadata_path}")
+                logger.info(f"Dataset: {metadata.get('name', 'Unknown')}")
+                logger.info(f"Updated config - Projections: {self.config.num_projections}, "
+                        f"Detector: {self.config.detector_pixels}, "
+                        f"Volume: {self.config.num_voxels}")
+                
+            except Exception as e:
+                logger.error(f"✗ Failed to load metadata from {metadata_path}: {e}")
+                logger.error("Exiting due to metadata loading failure")
+                raise RuntimeError(f"Critical: Could not load required metadata from {metadata_path}")
+        else:
+            logger.warning(f"⚠ No metadata file found at {metadata_path}")
+            logger.warning("Continuing with default configuration values")
+            logger.info(f"Using defaults - Projections: {self.config.num_projections}, "
+                    f"Detector: {self.config.detector_pixels}, "
+                    f"Volume: {self.config.num_voxels}")
+        
+        # Get files and validate
         files = discover_projection_files(folder)
         
         if len(files) == 0:
+            logger.error(f"✗ No projection files found in {folder}")
             raise RuntimeError(f"No projection files found in {folder}")
             
-        if len(files) < self.config.num_projections:
-            logger.warning(f"Found {len(files)} files, but config expects {self.config.num_projections}. "
-                          f"Using available files.")
-            
+        if len(files) != self.config.num_projections:
+            logger.warning(f"⚠ Found {len(files)} files, config expects {self.config.num_projections}")
+            if len(files) < self.config.num_projections:
+                logger.warning(f"Using available {len(files)} files instead of {self.config.num_projections}")
+            else:
+                logger.warning(f"Using first {self.config.num_projections} of {len(files)} files")
+                
         # Use available files, up to configured limit
         files_to_use = files[:self.config.num_projections]
         
         logger.info(f"Loading {len(files_to_use)} projection files from {folder}")
         logger.info(f"File format: {os.path.splitext(files_to_use[0])[1]}")
+        logger.info(f"Expected detector shape: {self.config.detector_pixels[::-1]} (H x W)")
         
-        # Load first file to determine dimensions
-        first_proj = self._load_single_projection(files_to_use[0], raw_shape, raw_dtype)
-        expected_shape = self.config.detector_pixels[::-1]  # (height, width)
+        # Load first file to determine dimensions and validate
+        raw_shape = self.config.detector_pixels[::-1]  # (height, width)
+        raw_dtype = getattr(self.config, 'projection_dtype', 'uint16')  # Get from updated config
         
-        if first_proj.shape != expected_shape:
-            logger.warning(f"Projection shape {first_proj.shape} doesn't match "
-                          f"config {expected_shape}. Will resize if needed.")
+        try:
+            first_proj = self._load_single_projection(files_to_use[0], raw_shape, raw_dtype)
+            expected_shape = self.config.detector_pixels[::-1]  # (height, width)
+            
+            if first_proj.shape != expected_shape:
+                logger.warning(f"⚠ Projection shape {first_proj.shape} doesn't match "
+                            f"config {expected_shape}. Will resize.")
+        except Exception as e:
+            logger.error(f"✗ Failed to load test projection {files_to_use[0]}: {e}")
+            raise RuntimeError(f"Cannot load projection files from {folder}")
         
-        # Pre-allocate array
+        # Pre-allocate and load all projections
         imgs = []
         
-        # Load all projections
         for filepath in tqdm(files_to_use, desc="Loading projections"):
             try:
                 proj = self._load_single_projection(filepath, raw_shape, raw_dtype)
@@ -206,12 +439,12 @@ class CBCTDataLoader:
                 imgs.append(proj)
                 
             except Exception as e:
-                logger.error(f"Failed to load {filepath}: {e}")
-                raise
+                logger.error(f"✗ Failed to load {filepath}: {e}")
+                raise RuntimeError(f"Failed to load projection: {filepath}")
         
         # Stack and transfer to GPU
         stack = np.stack(imgs, axis=0)  # (nProj, height, width)
-        logger.info(f"Loaded projection stack shape: {stack.shape}")
+        logger.info(f"✓ Loaded projection stack shape: {stack.shape}")
         
         return cp.array(stack, dtype=cp.float32)
     
@@ -251,28 +484,121 @@ class CBCTDataLoader:
                     return info
         except Exception as e:
             logger.warning(f"Failed to load dataset info from {info_file}: {e}")
-            return {}  # (nProj, nv, nu)
+            return {}
+
+# Example usage:
+"""
+# Method 1: Load from metadata file directly
+loader = CBCTDataLoader.from_metadata('dataset_metadata.json')
+projections = loader.load_projection_stack()
+
+# Method 2: Create config from metadata, then use loader
+config = CBCTConfig.from_metadata('dataset_metadata.json')
+loader = CBCTDataLoader(config)
+projections = loader.load_projection_stack()
+
+# Method 3: Traditional hardcoded approach (still supported)
+# config = CBCTConfig(
+#     num_voxels=(256, 256, 256),
+#     volume_size_mm=(0.8, 50.0, 78.0),
+#     detector_pixels=(625, 512),
+#     detector_size_mm=(430.0, 350.0),
+#     detector_offset=(0.0, 0.0),
+#     num_projections=360,
+#     angle_step=1.0,
+#     source_origin_dist=212.515,
+#     source_detector_dist=1304.5,
+#     # ... other parameters
+# )
+# loader = CBCTDataLoader(config)
+# projections = loader.load_projection_stack()
+"""
 
 class CBCTPreprocessor:
     def __init__(self, config: CBCTConfig):
         self.config = config
-        self.derived = config.derived()
+        self.derived = self.config.derived()  # Cache derived params at initialization
+
+    def _update_derived_params(self):
+        """Update derived parameters when config changes"""
+        self.derived = self.config.derived()
+
+    def _apply_dark_current_correction(self, proj: cp.ndarray) -> cp.ndarray:
+        """Apply dark current correction: I_corrected = I_raw - dark_current"""
+        if self.config.dark_current > 0:
+            proj = proj - self.config.dark_current
+            # Ensure no negative values after correction
+            proj = cp.maximum(proj, 0.0)
+        return proj
+    
+    def _apply_log_correction(self, proj: cp.ndarray, I0: float = None) -> cp.ndarray:
+        """Apply logarithmic correction: proj = -log(I/I0)"""
+        if I0 is None:
+            # Use maximum intensity as reference if I0 not provided
+            I0 = float(cp.max(proj))
+        
+        # Avoid division by zero and log(0)
+        epsilon = 1e-6
+        proj = cp.maximum(proj, epsilon)
+        I0 = max(I0, epsilon)
+        
+        # Apply log correction: -log(I/I0) = log(I0) - log(I)
+        proj = cp.log(I0) - cp.log(proj)
+        
+        # Handle any remaining invalid values
+        proj = cp.nan_to_num(proj, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        return proj
 
     def preprocess_stack(self, stack: cp.ndarray) -> cp.ndarray:
-        # stack is (nProj, nv, nu)
+        """
+        Apply preprocessing pipeline to projection stack
+        Order: Dark Current → Log Correction → Cosine Weighting
+        """
         nProj, nv, nu = stack.shape
         proj_pre = cp.empty_like(stack)
+        
+        # Prepare cosine weighting matrix if needed
         CW = 1.0
         if self.config.cosine_weighting:
-            # Compute cosine weighting matrix (nv, nu)
-            uu, vv = cp.meshgrid(cp.array(self.derived['param_us']), cp.array(self.derived['param_vs']))
-            CW = self.config.source_detector_dist / cp.sqrt((uu ** 2 + vv ** 2) + self.config.source_detector_dist ** 2)
+            uu, vv = cp.meshgrid(cp.array(self.derived['param_us']), 
+                               cp.array(self.derived['param_vs']))
+            # print(uu.shape, vv.shape)
+            CW = (self.config.source_detector_dist / 
+                  cp.sqrt((uu ** 2 + vv ** 2) + self.config.source_detector_dist ** 2))
+        
+        # Determine I0 for log correction if needed (use first projection max)
+        I0 = None
+        if self.config.apply_log_correction:
+            # Apply dark current first to get clean reference
+            first_proj = stack[0].copy()
+            if self.config.dark_current > 0:
+                first_proj = self._apply_dark_current_correction(first_proj)
+            I0 = float(cp.max(first_proj))
+            logger.info(f"Using I0 = {I0:.2f} for log correction")
+        
         for i in tqdm(range(nProj), desc="Preprocessing projections"):
-            proj = stack[i]
+            proj = stack[i].copy()
+            
+            # Step 1: Dark current correction
+            if self.config.dark_current > 0:
+                proj = self._apply_dark_current_correction(proj)
+            
+            # Step 2: Logarithmic correction
+            if self.config.apply_log_correction:
+                proj = self._apply_log_correction(proj, I0)
+            
+            # Step 3: Cosine weighting
             if self.config.cosine_weighting:
                 proj = proj * CW
-            # Add more steps as needed, e.g., log correction, noise reduction, etc.
+            
             proj_pre[i] = proj
+            
+        logger.info(f"Preprocessing completed with: "
+                   f"Dark current={'✓' if self.config.dark_current > 0 else '✗'}, "
+                   f"Log correction={'✓' if self.config.apply_log_correction else '✗'}, "
+                   f"Cosine weighting={'✓' if self.config.cosine_weighting else '✗'}")
+        
         return proj_pre
 
 def ramp_flat(m):
@@ -340,9 +666,14 @@ class CBCTRampFilter:
 class CBCTBackprojector:
     def __init__(self, config: CBCTConfig):
         self.config = config
-        self.derived = config.derived()
+        # self.derived = config.derived()
+        self._update_derived_params()
         self._compile_backprojection_kernel()
         self._warmup_gpu()
+
+    def _update_derived_params(self):
+        """Update derived parameters when config changes"""
+        self.derived = self.config.derived()
 
     def _compile_backprojection_kernel(self):
         kernel_source = r"""
@@ -531,8 +862,8 @@ def save_config_snapshot(config: CBCTConfig, runtime_info: Dict[str, Any], path:
     with open(path, 'wb') as f:
         pickle.dump(snapshot, f)
 
-def main():
-    config = CBCTConfig()
+def CBCTPipeline(main_path: str):
+    config = CBCTConfig.create_with_metadata(os.path.join(main_path, 'slices'), 'metadata.json')
     os.makedirs(config.output_path, exist_ok=True)
     os.makedirs(config.intermediate_path, exist_ok=True)
     data_loader = CBCTDataLoader(config)
@@ -565,5 +896,6 @@ def main():
     logger.info(f"Config snapshot saved at {os.path.join(config.output_path, 'config_snapshot.pickle')}")
 
 if __name__ == '__main__':
-    main()
-    view_pickled_volume_napari(path='data/20200225_AXI_final_code/results/volume.pickle')
+    main_path = 'data/20200225_AXI_final_code'
+    CBCTPipeline(main_path)
+    view_pickled_volume_napari(path=os.path.join(main_path, 'results/volume.pickle'))
