@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # from filtbackproj import *  # single-core fallback
-from filtbackproj_multicore_full_parallelization import *
-# from filtbackproj_multicore_hybrid_vectorized_para import *
+# from filtbackproj_multicore_full_parallelization import *
+from filtbackproj_multicore_hybrid_vectorized_para import *
 
 class PerformanceMonitor:
     """Monitor CPU and per-process memory usage."""
@@ -210,35 +210,45 @@ def scalability_test():
 
 def create_performance_plots(results_df, image_name, timestamp):
     """Generate performance plots."""
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4))
 
     # Speedup
-    axes[0,0].plot(results_df['cores'], results_df['filter_speedup'], 'o-', label='Filtering', linewidth=2)
-    axes[0,0].plot(results_df['cores'], results_df['backproj_speedup'], 's-', label='Backprojection', linewidth=2)
-    axes[0,0].plot(results_df['cores'], results_df['cores'], '--', alpha=0.5, label='Ideal Linear')
-    axes[0,0].set_xlabel('Cores')
-    axes[0,0].set_ylabel('Speedup')
-    axes[0,0].set_title('Speedup vs Cores')
-    axes[0,0].legend(); axes[0,0].grid(True, alpha=0.3)
+    axes[0].plot(results_df['cores'], results_df['filter_speedup'], 'o-', label='Filtering', linewidth=2)
+    axes[0].plot(results_df['cores'], results_df['backproj_speedup'], 's-', label='Backprojection', linewidth=2)
+    axes[0].plot(results_df['cores'], results_df['cores'], '--', alpha=0.5, label='Ideal Linear')
+    axes[0].set_xlabel('Cores')
+    axes[0].set_ylabel('Speedup')
+    axes[0].set_title('Speedup vs Cores')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
 
     # Efficiency
-    axes[0,1].plot(results_df['cores'], results_df['filter_efficiency']*100, 'o-', label='Filtering', linewidth=2)
-    axes[0,1].plot(results_df['cores'], results_df['backproj_efficiency']*100, 's-', label='Backprojection', linewidth=2)
-    axes[0,1].axhline(100, color='gray', linestyle='--', alpha=0.5)
-    axes[0,1].set_xlabel('Cores'); axes[0,1].set_ylabel('Efficiency (%)')
-    axes[0,1].set_title('Efficiency vs Cores'); axes[0,1].legend(); axes[0,1].grid(True, alpha=0.3)
+    axes[1].plot(results_df['cores'], results_df['filter_efficiency']*100, 'o-', label='Filtering', linewidth=2)
+    axes[1].plot(results_df['cores'], results_df['backproj_efficiency']*100, 's-', label='Backprojection', linewidth=2)
+    axes[1].axhline(100, color='gray', linestyle='--', alpha=0.5)
+    axes[1].set_xlabel('Cores')
+    axes[1].set_ylabel('Efficiency (%)')
+    axes[1].set_title('Efficiency vs Cores')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
 
     # Execution Time
-    axes[1,0].plot(results_df['cores'], results_df['filter_time'], 'o-', label='Filtering')
-    axes[1,0].plot(results_df['cores'], results_df['backproj_time'], 's-', label='Backprojection')
-    axes[1,0].plot(results_df['cores'], results_df['total_time'], '^-', label='Total')
-    axes[1,0].set_xlabel('Cores'); axes[1,0].set_ylabel('Time (s)'); axes[1,0].set_title('Execution Time vs Cores')
-    axes[1,0].legend(); axes[1,0].grid(True, alpha=0.3); axes[1,0].set_yscale('log')
+    axes[2].plot(results_df['cores'], results_df['filter_time'], 'o-', label='Filtering')
+    axes[2].plot(results_df['cores'], results_df['backproj_time'], 's-', label='Backprojection')
+    axes[2].plot(results_df['cores'], results_df['total_time'], '^-', label='Total')
+    axes[2].set_xlabel('Cores')
+    axes[2].set_ylabel('Time (s)')
+    axes[2].set_title('Execution Time vs Cores')
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
+    axes[2].set_yscale('log')
 
     # Memory Usage
-    axes[1,1].plot(results_df['cores'], results_df['peak_memory_gb'], 'o-', color='red')
-    axes[1,1].set_xlabel('Cores'); axes[1,1].set_ylabel('Peak Memory (GB)')
-    axes[1,1].set_title('Memory Usage vs Cores'); axes[1,1].grid(True, alpha=0.3)
+    axes[3].plot(results_df['cores'], results_df['peak_memory_gb'], 'o-', color='red')
+    axes[3].set_xlabel('Cores')
+    axes[3].set_ylabel('Peak Memory (GB)')
+    axes[3].set_title('Memory Usage vs Cores')
+    axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plot_filename = f'data/scalability_test_result/{image_name}_scalability_plots_{timestamp}.png'

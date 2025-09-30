@@ -6,6 +6,9 @@ from multiprocessing import Pool
 import multiprocessing
 import time
 
+# Some stuffs
+from joblib import Parallel, delayed
+import multiprocessing
 
 def dummyImg(size0, size1):
     M = np.zeros((size0, size1))
@@ -60,10 +63,34 @@ def arange2(start, stop=None, step=1):
     return a
 
 
-def projFilter(sino, n_jobs=None):
-    """
-    Vectorized filtering - much faster than parallel for this operation.
-    """
+# def projFilter(sino, n_jobs=None):
+#     """
+#     Vectorized filtering - much faster than parallel for this operation.
+#     """
+#     a = 0.5
+#     projLen, numAngles = sino.shape
+#     step = 2 * np.pi / projLen
+#     w = arange2(-np.pi, np.pi, step)
+#     if len(w) < projLen:
+#         w = np.concatenate([w, [w[-1] + step]])
+
+#     rn1 = abs(2 / a * np.sin(a * w / 2))
+#     rn2 = np.sin(a * w / 2) / (a * w / 2)
+#     r = rn1 * (rn2) ** 2
+#     filt = fftshift(r)
+
+#     # Vectorized: single FFT for all columns
+#     sino_fft = fft(sino, axis=0)
+#     filtered_fft = sino_fft * filt[:, np.newaxis]
+#     return np.real(ifft(filtered_fft, axis=0))
+
+
+def _filter_single_angle(proj_col, filt):
+    projfft = fft(proj_col)
+    filtProj = projfft * filt
+    return np.real(ifft(filtProj))
+
+def projFilter(sino, n_jobs):
     a = 0.5
     projLen, numAngles = sino.shape
     step = 2 * np.pi / projLen
@@ -76,10 +103,13 @@ def projFilter(sino, n_jobs=None):
     r = rn1 * (rn2) ** 2
     filt = fftshift(r)
 
-    # Vectorized: single FFT for all columns
-    sino_fft = fft(sino, axis=0)
-    filtered_fft = sino_fft * filt[:, np.newaxis]
-    return np.real(ifft(filtered_fft, axis=0))
+    # Parallel filtering
+    results = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(_filter_single_angle)(sino[:, i], filt) for i in range(numAngles)
+    )
+
+    filtSino = np.stack(results, axis=1)
+    return filtSino
 
 
 def _backproj_angles_chunk(args):
