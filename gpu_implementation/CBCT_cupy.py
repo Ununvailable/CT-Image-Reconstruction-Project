@@ -56,26 +56,30 @@ class CBCTConfig:
     num_voxels: Tuple[int, int, int] = (256, 256, 256)
     volume_size_mm: Tuple[float, float, float] = (0.8, 50.0, 78.0)
     
-    # Pixel/detector setup
-    detector_pixels: Tuple[int, int] = (2860, 2860)
+    # Pixel/detector setup: detector_pixels = (nu, nv)
+    detector_pixels: Tuple[int, int] = (2860, 2860)  # (nu, nv)
     detector_size_mm: Tuple[float, float] = (430.0, 350.0)
     detector_offset: Tuple[float, float] = (0.0, 0.0)
     
     # Acquisition geometry
     num_projections: int = 360
     angle_step: float = 1.0
+    start_angle: float = 0.0            # <-- NEW, in degrees
     source_origin_dist: float = 212.515
     source_detector_dist: float = 1304.5
+    
+    # Projection data type (raw file reader)
+    projection_dtype: str = 'uint16'    # <-- NEW
     
     # Preprocessing
     cosine_weighting: bool = True
     dark_current: float = 20.0
-    bad_pixel_threshold: Optional[int] = None
+    bad_pixel_threshold: Optional[int] = 32768
     apply_log_correction: bool = True
     apply_bad_pixel_correction: bool = False
     apply_noise_reduction: bool = False
     apply_truncation_correction: bool = False
-    truncation_width: int = 0
+    truncation_width: int = 1000
     
     # Filtering
     filter_type: str = 'none'
@@ -88,7 +92,7 @@ class CBCTConfig:
     
     # Other
     max_gpu_memory_fraction: float = 0.8
-    
+
     # Internal state
     _derived_cache: Optional[Dict[str, Any]] = None
     _metadata_loaded: bool = False
@@ -131,60 +135,39 @@ class CBCTConfig:
         
         return config
 
-    def _apply_metadata(self, metadata: dict) -> None:
-        """Apply metadata values to current config instance"""
-        # Volume setup
-        if 'volume_voxels' in metadata:
-            self.num_voxels = tuple(metadata['volume_voxels'])
-        if 'volume_size_mm' in metadata:
-            self.volume_size_mm = tuple(metadata['volume_size_mm'])
-            
-        # Detector setup
+    
+    def _apply_metadata(self, metadata: Dict[str, Any]):
+        # Acquisition parameters
+        if 'angle_step' in metadata:
+            self.angle_step = metadata['angle_step']
+        if 'start_angle' in metadata:              # <-- NEW
+            self.start_angle = metadata['start_angle']
+        if 'num_projections' in metadata:
+            self.num_projections = metadata['num_projections']
+        
+        # Detector parameters
         if 'detector_pixels' in metadata:
             self.detector_pixels = tuple(metadata['detector_pixels'])
         if 'detector_size_mm' in metadata:
             self.detector_size_mm = tuple(metadata['detector_size_mm'])
         if 'detector_offset' in metadata:
             self.detector_offset = tuple(metadata['detector_offset'])
-            
-        # Acquisition geometry
-        if 'num_projections' in metadata:
-            self.num_projections = metadata['num_projections']
-        if 'angle_step' in metadata:
-            self.angle_step = metadata['angle_step']
+        
+        # Distances
         if 'source_origin_dist' in metadata:
             self.source_origin_dist = metadata['source_origin_dist']
         if 'source_detector_dist' in metadata:
             self.source_detector_dist = metadata['source_detector_dist']
-            
-        # Preprocessing
-        if 'cosine_weighting' in metadata:
-            self.cosine_weighting = metadata['cosine_weighting']
-        if 'dark_current' in metadata:
-            self.dark_current = metadata['dark_current']
-        if 'apply_log_correction' in metadata:
-            self.apply_log_correction = metadata['apply_log_correction']
-        if 'apply_bad_pixel_correction' in metadata:
-            self.apply_bad_pixel_correction = metadata['apply_bad_pixel_correction']
-        if 'apply_noise_reduction' in metadata:
-            self.apply_noise_reduction = metadata['apply_noise_reduction']
-        if 'apply_truncation_correction' in metadata:
-            self.apply_truncation_correction = metadata['apply_truncation_correction']
-        if 'truncation_width' in metadata:
-            self.truncation_width = metadata['truncation_width']
-            
-        # Filtering
-        if 'filter_type' in metadata:
-            self.filter_type = metadata['filter_type']
-            
-        # Processing options
+        
+        # Projection dtype
+        if 'projection_dtype' in metadata:         # <-- NEW
+            self.projection_dtype = metadata['projection_dtype']
+        
+        # Processing
         if 'save_intermediate' in metadata:
             self.save_intermediate = metadata['save_intermediate']
         if 'max_gpu_memory_fraction' in metadata:
             self.max_gpu_memory_fraction = metadata['max_gpu_memory_fraction']
-        
-        # Clear derived cache when config changes
-        self._derived_cache = None
 
     @classmethod
     def from_metadata(cls, metadata: dict) -> 'CBCTConfig':
@@ -280,6 +263,7 @@ class CBCTDataLoader:
             data = tifffile.imread(filepath)
             if data.ndim == 3 and data.shape[0] == 1:
                 data = data.squeeze(0)  # Remove singleton dimension
+            # logger.info(f"Loaded TIFF {filepath} with shape {data.shape} and dtype {data.dtype}")
             return data.astype(np.float32)
         except Exception as e1:
             try:
@@ -550,6 +534,53 @@ class CBCTPreprocessor:
         
         return proj
 
+    def _apply_bad_pixel_correction(self, projections: cp.ndarray) -> np.ndarray:
+        """Simple bad pixel correction using median filter"""
+        try:
+            from scipy.ndimage import median_filter
+            corrected = projections.copy()
+            
+            for i in range(projections.shape[0]):
+                bad_mask = projections[i] > self.config.bad_pixel_threshold
+                if np.any(bad_mask):
+                    filtered = median_filter(projections[i], size=3)
+                    corrected[i] = np.where(bad_mask, filtered, projections[i])
+            
+            return corrected
+        except ImportError:
+            logger.warning("scipy not available; skipping bad pixel correction")
+            return projections
+    
+    def _apply_noise_reduction(self, projections: cp.ndarray) -> np.ndarray:
+        """Apply Gaussian noise reduction"""
+        try:
+            from scipy.ndimage import gaussian_filter
+            filtered = np.zeros_like(projections)
+            
+            for i in range(projections.shape[0]):
+                filtered[i] = gaussian_filter(projections[i], sigma=1.5)
+            cp.ndarray
+            return filtered
+        except ImportError:
+            logger.warning("scipy not available; skipping noise reduction")
+            return projections
+    
+    def _apply_truncation_correction(self, projections: cp.ndarray) -> np.ndarray:
+        """Truncation artifact correction"""
+        corrected = projections.copy()
+        width = self.config.truncation_width
+        
+        if width > 0 and width < projections.shape[1]:
+            # Extend edges with mean values
+            for i in range(projections.shape[2]):
+                left_edge = np.mean(corrected[i, :, :10], axis=1, keepdims=True)
+                corrected[i, :, :width] = left_edge
+                
+                right_edge = np.mean(corrected[i, :, -10:], axis=1, keepdims=True)
+                corrected[i, :, -width:] = right_edge
+        
+        return corrected
+
     def preprocess_stack(self, stack: cp.ndarray) -> cp.ndarray:
         """
         Apply preprocessing pipeline to projection stack
@@ -587,10 +618,19 @@ class CBCTPreprocessor:
             # Step 2: Logarithmic correction
             if self.config.apply_log_correction:
                 proj = self._apply_log_correction(proj, I0)
+
+            # if self.config.apply_bad_pixel_correction:
+            #     proj = self._apply_bad_pixel_correction(proj)
+            
+            # if self.config.apply_noise_reduction:
+            #     proj = self._apply_noise_reduction(proj)
+            
+            # if self.config.apply_truncation_correction:
+            #     proj = self._apply_truncation_correction(proj)
             
             # Step 3: Cosine weighting
-            if self.config.cosine_weighting:
-                proj = proj * CW
+            # if self.config.cosine_weighting:
+            #     proj = proj * CW
             
             proj_pre[i] = proj
             
@@ -598,6 +638,7 @@ class CBCTPreprocessor:
                    f"Dark current={'✓' if self.config.dark_current > 0 else '✗'}, "
                    f"Log correction={'✓' if self.config.apply_log_correction else '✗'}, "
                    f"Cosine weighting={'✓' if self.config.cosine_weighting else '✗'}")
+        # logger.info(f"Preprocessing skipped, some preprocessing steps not yet")
         
         return proj_pre
 
@@ -714,7 +755,7 @@ class CBCTBackprojector:
                 float ry = -xx * r_sin + yy * r_cos;
                 
                 float pu = (rx * param_DSD / (ry + param_DSO) + us_0) / (-param_du);
-                float pv = (zz * param_DSD / (ry + param_DSO) - vs_0) / param_dv;
+                float pv = (zz * param_DSD / (ry + param_DSO) + vs_0) / param_dv;
                 
                 // Bounds check
                 if (pu <= 0 || pu >= nu || pv <= 0 || pv >= nv) continue;
@@ -751,6 +792,7 @@ class CBCTBackprojector:
                 float interpolated = Ia * wa + Ib * wb + Ic * wc + Id * wd;
                 acc += Ratio * interpolated;
             }
+            acc /= nProj;  // Normalize by number of projections
             
             volume[z * nx * ny + y * nx + x] = acc;
         }
@@ -810,10 +852,14 @@ class CBCTBackprojector:
         param_ys = cp.array(self.derived['param_ys'], dtype=cp.float32)
         param_zs = cp.array(self.derived['param_zs'], dtype=cp.float32)
         
-        # Angle computation
-        angle_step = self.config.angle_step
-        angle_rads = cp.array([np.pi * (i * angle_step / 180 - 0.5) for i in range(nProj)], 
-                             dtype=cp.float32)
+        # Compute projection angles in radians
+        start_angle_deg = getattr(self.config, 'start_angle', 0.0)
+        angle_step_deg = self.config.angle_step
+        angle_deg = cp.array(
+            [start_angle_deg + i * angle_step_deg for i in range(nProj)],
+            dtype=cp.float32
+        )
+        angle_rads = angle_deg * (np.pi / 180.0)  # convert degrees → radians
         
         # Initialize volume
         volume = cp.zeros((nz, ny, nx), dtype=cp.float32)
@@ -896,6 +942,6 @@ def CBCTPipeline(main_path: str):
     logger.info(f"Config snapshot saved at {os.path.join(config.output_path, 'config_snapshot.pickle')}")
 
 if __name__ == '__main__':
-    main_path = 'data/20200225_AXI_final_code'
+    main_path = 'data/20240530_ITRI_downsampled_4x'
     CBCTPipeline(main_path)
     view_pickled_volume_napari(path=os.path.join(main_path, 'results/volume.pickle'))
