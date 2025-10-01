@@ -411,8 +411,8 @@ def main():
         detector_size=(2860, 2860),
         pixel_size_u=0.15,
         pixel_size_v=0.15,
-        # voxel_size=0.006134010138512811,
-        voxel_size=0.01713,  # Increased voxel size for larger FOV
+        voxel_size=0.006134010138512811,
+        # voxel_size=0.01713,  # Increased voxel size for larger FOV
         source_object_dist=28.625365287711134,
         source_detector_dist=699.9996522369905,
         detector_offset_u=1430.1098329145173 / 0.01713,
@@ -433,7 +433,7 @@ def main():
     )
     
     # Input/output paths
-    projection_folder = 'data/cbct_projections/'
+    projection_folder = 'data/20240530_ITRI/slices/'
     output_folder = 'data/astra_reconstructed/'
     
     if not os.path.exists(projection_folder):
@@ -454,8 +454,9 @@ def main():
         projections = data_loader.load_projections(projection_folder)
         
         # 2. Preprocess projections
-        projections_processed = preprocessor.preprocess_projections(projections)
-        
+        # projections_processed = preprocessor.preprocess_projections(projections)
+        projections_processed = projections  # Skip preprocessing for testing
+
         # 3. Reconstruct volume
         start_total = time.perf_counter()
         reconstruction = reconstructor.reconstruct(projections_processed)
