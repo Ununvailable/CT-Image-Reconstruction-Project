@@ -56,6 +56,7 @@ class CBCTConfig:
     # Voxel/volume setup
     num_voxels: Tuple[int, int, int] = (256, 256, 256)
     volume_size_mm: Tuple[float, float, float] = (17.543, 17.543, 17.543)
+    voxel_size: Tuple[float, float, float] = (0.006134010138512811, 0.006134010138512811, 0.006134010138512811)  # mm, assume isotropic
     
     # Pixel/detector setup: detector_pixels = (nu, nv)
     detector_pixels: Tuple[int, int] = (2860, 2860)  # (nu, nv)
@@ -87,9 +88,9 @@ class CBCTConfig:
     
     # Saving
     save_intermediate: bool = True
-    input_path: str = r"data\\20200225_AXI_final_code\\slices\\"
-    intermediate_path: str = "data/20200225_AXI_final_code/intermediate"
-    output_path: str = "data/20200225_AXI_final_code/results"
+    input_path: str = r"data\\20240530_ITRI_downsampled_4x\\slices\\"
+    intermediate_path: str = "data/20240530_ITRI_downsampled_4x/intermediate"
+    output_path: str = "data/20240530_ITRI_downsampled_4x/results"
     
     # Other
     max_gpu_memory_fraction: float = 0.8
@@ -198,8 +199,10 @@ class CBCTConfig:
             sx, sy, sz = self.volume_size_mm
             nu, nv = self.detector_pixels
             su, sv = self.detector_size_mm
-            dx, dy, dz = sx / nx, sy / ny, sz / nz
-            du, dv = su / nu, sv / nv
+            # dx, dy, dz = sx / nx, sy / ny, sz / nz
+            dx, dy, dz = self.voxel_size  # Override with explicit voxel size if provided
+            # du, dv = su / nu, sv / nv
+            du, dv = self.detector_size_mm
 
             # Convert offset from original detector pixels to binned mm coordinates
             offset_u_pixels_binned = self.detector_offset[0] / 4  # 1430.1/4 = 357.5
@@ -987,6 +990,9 @@ def save_config_snapshot(config: CBCTConfig, runtime_info: Dict[str, Any], path:
 
 def CBCTPipeline(main_path: str):
     config = CBCTConfig.create_with_metadata(os.path.join(main_path, 'slices'), 'metadata.json')
+    config.input_path = os.path.join(main_path, 'slices')
+    config.output_path = os.path.join(main_path, 'results')
+    config.intermediate_path = os.path.join(main_path, 'intermediate')
     os.makedirs(config.output_path, exist_ok=True)
     os.makedirs(config.intermediate_path, exist_ok=True)
     data_loader = CBCTDataLoader(config)

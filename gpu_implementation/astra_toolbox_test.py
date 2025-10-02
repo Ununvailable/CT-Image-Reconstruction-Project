@@ -451,7 +451,7 @@ def main():
         volume_size=(512, 512, 512),  # Smaller volume
         algorithm="FDK_CUDA",
         projection_batch_size=50,
-        downsample_factor=1,  # Reduce from 2860x2860 to 1430x1430
+        downsample_factor=1, 
         
         # Processing options
         apply_log_correction=True,
