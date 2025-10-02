@@ -403,26 +403,55 @@ class ASTRAReconstructor:
 def main():
     """Main reconstruction pipeline"""
     
+    # # Configuration based on provided metadata
+    # config = ASTRACBCTConfig(
+    #     num_projections=1600,
+    #     scan_angle=360.0,
+    #     start_angle=270.0,
+    #     detector_size=(2860, 2860),
+    #     pixel_size_u=0.15,
+    #     pixel_size_v=0.15,
+    #     voxel_size=0.006134010138512811,
+    #     # voxel_size=0.01713,  # Increased voxel size for larger FOV
+    #     source_object_dist=28.625365287711134,
+    #     source_detector_dist=699.9996522369905,
+    #     detector_offset_u=1430.1098329145173 / 0.01713,
+    #     detector_offset_v=1429.4998776624227 / 0.01713,
+
+    #     # Reduced settings for memory management
+    #     volume_size=(1024, 1024, 1024),  # Smaller volume
+    #     algorithm="FDK_CUDA",
+    #     projection_batch_size=50,
+    #     downsample_factor=2,  # Reduce from 2860x2860 to 1430x1430
+        
+    #     # Processing options
+    #     apply_log_correction=True,
+    #     apply_bad_pixel_correction=True,
+    #     apply_noise_reduction=True,
+    #     apply_truncation_correction=True,
+    #     truncation_width=125  # Adjusted for downsampling
+    # )
+    
     # Configuration based on provided metadata
     config = ASTRACBCTConfig(
         num_projections=1600,
         scan_angle=360.0,
         start_angle=270.0,
-        detector_size=(2860, 2860),
-        pixel_size_u=0.15,
-        pixel_size_v=0.15,
+        detector_size=(715, 715),
+        pixel_size_u=0.6,
+        pixel_size_v=0.6,
         voxel_size=0.006134010138512811,
         # voxel_size=0.01713,  # Increased voxel size for larger FOV
         source_object_dist=28.625365287711134,
         source_detector_dist=699.9996522369905,
-        detector_offset_u=1430.1098329145173 / 0.01713,
-        detector_offset_v=1429.4998776624227 / 0.01713,
+        detector_offset_u=357.5 / 0.01713,
+        detector_offset_v=357.4 / 0.01713,
 
         # Reduced settings for memory management
-        volume_size=(1024, 1024, 1024),  # Smaller volume
+        volume_size=(512, 512, 512),  # Smaller volume
         algorithm="FDK_CUDA",
         projection_batch_size=50,
-        downsample_factor=2,  # Reduce from 2860x2860 to 1430x1430
+        downsample_factor=1,  # Reduce from 2860x2860 to 1430x1430
         
         # Processing options
         apply_log_correction=True,
@@ -431,9 +460,9 @@ def main():
         apply_truncation_correction=True,
         truncation_width=125  # Adjusted for downsampling
     )
-    
+
     # Input/output paths
-    projection_folder = 'data/20240530_ITRI/slices/'
+    projection_folder = 'data/20240530_ITRI_downsampled_4x/slices/'
     output_folder = 'data/astra_reconstructed/'
     
     if not os.path.exists(projection_folder):

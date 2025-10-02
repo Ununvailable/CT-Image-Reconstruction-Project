@@ -122,6 +122,6 @@ def view_pickled_volume_napari(path: str):
     napari.run()
 
 if __name__ == "__main__":
-    view_pickled_volume_napari(path='data/20200225_AXI_final_code/results/volume.pickle')
+    view_pickled_volume_napari(path='data/20200225_AXI_final_code_simplified/results/volume.pickle')
 
 

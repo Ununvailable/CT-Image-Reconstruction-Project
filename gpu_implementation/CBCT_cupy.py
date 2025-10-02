@@ -1,3 +1,4 @@
+from networkx import volume
 import numpy as np
 import os
 import time
@@ -54,7 +55,7 @@ Example metadata.json file structure:
 class CBCTConfig:
     # Voxel/volume setup
     num_voxels: Tuple[int, int, int] = (256, 256, 256)
-    volume_size_mm: Tuple[float, float, float] = (0.8, 50.0, 78.0)
+    volume_size_mm: Tuple[float, float, float] = (17.543, 17.543, 17.543)
     
     # Pixel/detector setup: detector_pixels = (nu, nv)
     detector_pixels: Tuple[int, int] = (2860, 2860)  # (nu, nv)
@@ -73,13 +74,13 @@ class CBCTConfig:
     
     # Preprocessing
     cosine_weighting: bool = True
-    dark_current: float = 20.0
+    dark_current: float = 100.0
     bad_pixel_threshold: Optional[int] = 32768
     apply_log_correction: bool = True
     apply_bad_pixel_correction: bool = False
     apply_noise_reduction: bool = False
     apply_truncation_correction: bool = False
-    truncation_width: int = 1000
+    truncation_width: int = 125
     
     # Filtering
     filter_type: str = 'none'
@@ -153,6 +154,12 @@ class CBCTConfig:
         if 'detector_offset' in metadata:
             self.detector_offset = tuple(metadata['detector_offset'])
         
+        # Voxel/volume parameters
+        if 'volume_voxels' in metadata:
+            self.num_voxels = tuple(metadata['volume_voxels'])
+        if 'volume_size_mm' in metadata:
+            self.volume_size_mm = tuple(metadata['volume_size_mm'])
+
         # Distances
         if 'source_origin_dist' in metadata:
             self.source_origin_dist = metadata['source_origin_dist']
@@ -193,12 +200,22 @@ class CBCTConfig:
             su, sv = self.detector_size_mm
             dx, dy, dz = sx / nx, sy / ny, sz / nz
             du, dv = su / nu, sv / nv
+
+            # Convert offset from original detector pixels to binned mm coordinates
+            offset_u_pixels_binned = self.detector_offset[0] / 4  # 1430.1/4 = 357.5
+            offset_v_pixels_binned = self.detector_offset[1] / 4  # 1429.5/4 = 357.4
+
+            # Convert to mm using BINNED pixel size
+            offset_u_mm = (offset_u_pixels_binned - nu/2) * du  # Offset from center
+            offset_v_mm = (offset_v_pixels_binned - nv/2) * dv
             
             self._derived_cache = {
                 'param_dx': dx, 'param_dy': dy, 'param_dz': dz,
                 'param_du': du, 'param_dv': dv,
-                'param_us': np.arange((-nu/2 + 0.5), (nu/2), 1) * du + self.detector_offset[0],
-                'param_vs': np.arange((-nv/2 + 0.5), (nv/2), 1) * dv + self.detector_offset[1],
+                # 'param_us': np.arange((-nu/2 + 0.5), (nu/2), 1) * du + self.detector_offset[0],
+                # 'param_vs': np.arange((-nv/2 + 0.5), (nv/2), 1) * dv + self.detector_offset[1],
+                'param_us': (np.arange(nu) - nu/2 + 0.5) * du + offset_u_mm,
+                'param_vs': (np.arange(nv) - nv/2 + 0.5) * dv + offset_v_mm,
                 'param_xs': np.arange((-nx/2 + 0.5), (nx/2), 1) * dx,
                 'param_ys': np.arange((-ny/2 + 0.5), (ny/2), 1) * dy,
                 'param_zs': np.arange((-nz/2 + 0.5), (nz/2), 1) * dz,
@@ -512,7 +529,7 @@ class CBCTPreprocessor:
         if self.config.dark_current > 0:
             proj = proj - self.config.dark_current
             # Ensure no negative values after correction
-            proj = cp.maximum(proj, 0.0)
+            proj = cp.maximum(proj, 1.0)
         return proj
     
     def _apply_log_correction(self, proj: cp.ndarray, I0: float = None) -> cp.ndarray:
@@ -534,57 +551,48 @@ class CBCTPreprocessor:
         
         return proj
 
-    def _apply_bad_pixel_correction(self, projections: cp.ndarray) -> np.ndarray:
-        """Simple bad pixel correction using median filter"""
+    def _apply_bad_pixel_correction(self, proj: cp.ndarray) -> cp.ndarray:
+        """GPU-accelerated bad pixel correction using median filter"""
         try:
-            from scipy.ndimage import median_filter
-            corrected = projections.copy()
-            
-            for i in range(projections.shape[0]):
-                bad_mask = projections[i] > self.config.bad_pixel_threshold
-                if np.any(bad_mask):
-                    filtered = median_filter(projections[i], size=3)
-                    corrected[i] = np.where(bad_mask, filtered, projections[i])
-            
-            return corrected
+            from cupyx.scipy.ndimage import median_filter
+            bad_mask = proj > self.config.bad_pixel_threshold
+            if cp.any(bad_mask):
+                filtered = median_filter(proj, size=3)
+                proj = cp.where(bad_mask, filtered, proj)
+            return proj
         except ImportError:
-            logger.warning("scipy not available; skipping bad pixel correction")
-            return projections
+            logger.warning("cupyx.scipy not available; skipping bad pixel correction")
+            return proj
     
-    def _apply_noise_reduction(self, projections: cp.ndarray) -> np.ndarray:
-        """Apply Gaussian noise reduction"""
+    def _apply_noise_reduction(self, proj: cp.ndarray) -> cp.ndarray:
+        """GPU-accelerated Gaussian noise reduction"""
         try:
-            from scipy.ndimage import gaussian_filter
-            filtered = np.zeros_like(projections)
-            
-            for i in range(projections.shape[0]):
-                filtered[i] = gaussian_filter(projections[i], sigma=1.5)
-            cp.ndarray
-            return filtered
+            from cupyx.scipy.ndimage import gaussian_filter
+            proj = gaussian_filter(proj, sigma=1.5)
+            return proj
         except ImportError:
-            logger.warning("scipy not available; skipping noise reduction")
-            return projections
+            logger.warning("cupyx.scipy not available; skipping noise reduction")
+            return proj
     
-    def _apply_truncation_correction(self, projections: cp.ndarray) -> np.ndarray:
-        """Truncation artifact correction"""
-        corrected = projections.copy()
+    def _apply_truncation_correction(self, proj: cp.ndarray) -> cp.ndarray:
+        """GPU-accelerated truncation artifact correction"""
         width = self.config.truncation_width
         
-        if width > 0 and width < projections.shape[1]:
+        if width > 0 and width < proj.shape[1]:
             # Extend edges with mean values
-            for i in range(projections.shape[2]):
-                left_edge = np.mean(corrected[i, :, :10], axis=1, keepdims=True)
-                corrected[i, :, :width] = left_edge
-                
-                right_edge = np.mean(corrected[i, :, -10:], axis=1, keepdims=True)
-                corrected[i, :, -width:] = right_edge
+            left_edge = cp.mean(proj[:, :10], axis=1, keepdims=True)
+            proj[:, :width] = left_edge
+            
+            right_edge = cp.mean(proj[:, -10:], axis=1, keepdims=True)
+            proj[:, -width:] = right_edge
         
-        return corrected
+        return proj
 
     def preprocess_stack(self, stack: cp.ndarray) -> cp.ndarray:
         """
-        Apply preprocessing pipeline to projection stack
-        Order: Dark Current → Log Correction → Cosine Weighting
+        Apply full preprocessing pipeline to projection stack
+        Order: Dark Current → Log Correction → Bad Pixel → Noise Reduction → 
+               Truncation Correction → Cosine Weighting
         """
         nProj, nv, nu = stack.shape
         proj_pre = cp.empty_like(stack)
@@ -594,7 +602,6 @@ class CBCTPreprocessor:
         if self.config.cosine_weighting:
             uu, vv = cp.meshgrid(cp.array(self.derived['param_us']), 
                                cp.array(self.derived['param_vs']))
-            # print(uu.shape, vv.shape)
             CW = (self.config.source_detector_dist / 
                   cp.sqrt((uu ** 2 + vv ** 2) + self.config.source_detector_dist ** 2))
         
@@ -619,26 +626,40 @@ class CBCTPreprocessor:
             if self.config.apply_log_correction:
                 proj = self._apply_log_correction(proj, I0)
 
-            # if self.config.apply_bad_pixel_correction:
-            #     proj = self._apply_bad_pixel_correction(proj)
+            # Step 3: Bad pixel correction
+            if self.config.apply_bad_pixel_correction:
+                proj = self._apply_bad_pixel_correction(proj)
             
-            # if self.config.apply_noise_reduction:
-            #     proj = self._apply_noise_reduction(proj)
+            # Step 4: Noise reduction
+            if self.config.apply_noise_reduction:
+                proj = self._apply_noise_reduction(proj)
             
-            # if self.config.apply_truncation_correction:
-            #     proj = self._apply_truncation_correction(proj)
+            # Step 5: Truncation correction
+            if self.config.apply_truncation_correction:
+                proj = self._apply_truncation_correction(proj)
             
-            # Step 3: Cosine weighting
-            # if self.config.cosine_weighting:
-            #     proj = proj * CW
+            # Step 6: Cosine weighting
+            if self.config.cosine_weighting:
+                proj = proj * CW
             
             proj_pre[i] = proj
-            
-        logger.info(f"Preprocessing completed with: "
-                   f"Dark current={'✓' if self.config.dark_current > 0 else '✗'}, "
-                   f"Log correction={'✓' if self.config.apply_log_correction else '✗'}, "
-                   f"Cosine weighting={'✓' if self.config.cosine_weighting else '✗'}")
-        # logger.info(f"Preprocessing skipped, some preprocessing steps not yet")
+        
+        # Build status message
+        steps_enabled = []
+        if self.config.dark_current > 0:
+            steps_enabled.append("Dark current")
+        if self.config.apply_log_correction:
+            steps_enabled.append("Log correction")
+        if self.config.apply_bad_pixel_correction:
+            steps_enabled.append("Bad pixel")
+        if self.config.apply_noise_reduction:
+            steps_enabled.append("Noise reduction")
+        if self.config.apply_truncation_correction:
+            steps_enabled.append("Truncation")
+        if self.config.cosine_weighting:
+            steps_enabled.append("Cosine weighting")
+        
+        logger.info(f"Preprocessing completed with: {', '.join(steps_enabled)}")
         
         return proj_pre
 
@@ -707,7 +728,6 @@ class CBCTRampFilter:
 class CBCTBackprojector:
     def __init__(self, config: CBCTConfig):
         self.config = config
-        # self.derived = config.derived()
         self._update_derived_params()
         self._compile_backprojection_kernel()
         self._warmup_gpu()
@@ -717,84 +737,107 @@ class CBCTBackprojector:
         self.derived = self.config.derived()
 
     def _compile_backprojection_kernel(self):
+        """
+        Corrected CUDA kernel matching ASTRA's cone beam geometry.
+        
+        Key differences from original:
+        1. Proper detector coordinate mapping (no sign errors)
+        2. Correct handling of detector offsets
+        3. Proper bounds checking
+        4. Correct weighting factor
+        """
         kernel_source = r"""
         extern "C" __global__
         void backproj_kernel(const float* __restrict__ filtered,
                             float* __restrict__ volume,
-                            const float* __restrict__ param_us,
-                            const float* __restrict__ param_vs,
-                            const float* __restrict__ param_xs,
-                            const float* __restrict__ param_ys,
-                            const float* __restrict__ param_zs,
-                            const float* __restrict__ angle_rads,
-                            const int nProj, const int nv, const int nu,
-                            const int nx, const int ny, const int nz,
-                            const float param_du, const float param_dv,
-                            const float param_DSD, const float param_DSO)
+                            const float* __restrict__ angles,
+                            const int nProj, const int nDetRows, const int nDetCols,
+                            const int nVoxX, const int nVoxY, const int nVoxZ,
+                            const float voxSizeX, const float voxSizeY, const float voxSizeZ,
+                            const float detPixelU, const float detPixelV,
+                            const float detOffsetU, const float detOffsetV,
+                            const float sourceDist, const float detectorDist)
         {
-            int x = blockDim.x * blockIdx.x + threadIdx.x;
-            int y = blockDim.y * blockIdx.y + threadIdx.y;
-            int z = blockDim.z * blockIdx.z + threadIdx.z;
+            // Thread indices map to voxel coordinates
+            int ix = blockDim.x * blockIdx.x + threadIdx.x;
+            int iy = blockDim.y * blockIdx.y + threadIdx.y;
+            int iz = blockDim.z * blockIdx.z + threadIdx.z;
             
-            if (x >= nx || y >= ny || z >= nz) return;
+            if (ix >= nVoxX || iy >= nVoxY || iz >= nVoxZ) return;
             
-            float xx = param_xs[x];
-            float yy = param_ys[y];
-            float zz = param_zs[z];
-            float us_0 = param_us[0];
-            float vs_0 = param_vs[0];
+            // Voxel position in world coordinates (centered at origin)
+            float vx = (ix - nVoxX / 2.0f + 0.5f) * voxSizeX;
+            float vy = (iy - nVoxY / 2.0f + 0.5f) * voxSizeY;
+            float vz = (iz - nVoxZ / 2.0f + 0.5f) * voxSizeZ;
             
-            float acc = 0.0f;
+            float accumulator = 0.0f;
             
-            for (int proj_idx = 0; proj_idx < nProj; proj_idx++) {
-                float angle = angle_rads[proj_idx];
-                float r_cos = cosf(angle);
-                float r_sin = sinf(angle);
+            // Loop over all projections
+            for (int proj = 0; proj < nProj; proj++) {
+                float angle = angles[proj];
+                float cosA = cosf(angle);
+                float sinA = sinf(angle);
                 
-                float rx = xx * r_cos + yy * r_sin;
-                float ry = -xx * r_sin + yy * r_cos;
+                // Rotate voxel position to projection coordinate system
+                // Source is at (-sourceDist, 0) in rotated coordinates
+                float px = vx * cosA + vy * sinA;
+                float py = -vx * sinA + vy * cosA;
+                float pz = vz;
                 
-                float pu = (rx * param_DSD / (ry + param_DSO) + us_0) / (-param_du);
-                float pv = (zz * param_DSD / (ry + param_DSO) + vs_0) / param_dv;
+                // Distance from source to voxel
+                float sourceToVoxelY = py + sourceDist;
                 
-                // Bounds check
-                if (pu <= 0 || pu >= nu || pv <= 0 || pv >= nv) continue;
+                // Skip if voxel is behind source
+                if (sourceToVoxelY <= 0.0f) continue;
                 
-                float Ratio = param_DSO * param_DSO / ((param_DSO + ry) * (param_DSO + ry));
+                // Project onto detector plane
+                // Detector is at (detectorDist - sourceDist, 0) from source
+                float projectionScale = detectorDist / sourceToVoxelY;
+                
+                // Detector coordinates (physical units, centered at principal point)
+                float detU = px * projectionScale - detOffsetU;
+                float detV = pz * projectionScale - detOffsetV;
+                
+                // Convert to pixel indices (detector center is at detector dimensions/2)
+                float pixU = detU / detPixelU + nDetCols / 2.0f;
+                float pixV = detV / detPixelV + nDetRows / 2.0f;
+                
+                // Bounds check with margin for interpolation
+                if (pixU < 0.0f || pixU >= nDetCols - 1.0f || 
+                    pixV < 0.0f || pixV >= nDetRows - 1.0f) continue;
                 
                 // Bilinear interpolation
-                int pu_0 = (int)floorf(pu);
-                int pu_1 = pu_0 + 1;
-                int pv_0 = (int)floorf(pv);
-                int pv_1 = pv_0 + 1;
+                int u0 = (int)floorf(pixU);
+                int v0 = (int)floorf(pixV);
+                int u1 = u0 + 1;
+                int v1 = v0 + 1;
                 
-                pu_0 = max(0, min(pu_0, nu - 1));
-                pu_1 = max(0, min(pu_1, nu - 1));
-                pv_0 = max(0, min(pv_0, nv - 1));
-                pv_1 = max(0, min(pv_1, nv - 1));
+                float fu = pixU - u0;
+                float fv = pixV - v0;
                 
-                float x1_x = pu_1 - pu;
-                float x_x0 = pu - pu_0;
-                float y1_y = pv_1 - pv;
-                float y_y0 = pv - pv_0;
+                // Get projection data
+                int baseIdx = proj * nDetRows * nDetCols;
+                float p00 = filtered[baseIdx + v0 * nDetCols + u0];
+                float p01 = filtered[baseIdx + v0 * nDetCols + u1];
+                float p10 = filtered[baseIdx + v1 * nDetCols + u0];
+                float p11 = filtered[baseIdx + v1 * nDetCols + u1];
                 
-                float wa = x1_x * y1_y;
-                float wb = x1_x * y_y0;
-                float wc = x_x0 * y1_y;
-                float wd = x_x0 * y_y0;
+                // Interpolate
+                float val = (1.0f - fu) * (1.0f - fv) * p00 +
+                           fu * (1.0f - fv) * p01 +
+                           (1.0f - fu) * fv * p10 +
+                           fu * fv * p11;
                 
-                int base_idx = proj_idx * nv * nu;
-                float Ia = filtered[base_idx + pv_0 * nu + pu_0];
-                float Ib = filtered[base_idx + pv_1 * nu + pu_0];
-                float Ic = filtered[base_idx + pv_0 * nu + pu_1];
-                float Id = filtered[base_idx + pv_1 * nu + pu_1];
+                // Distance weighting (cone beam geometry)
+                float weight = (sourceDist * sourceDist) / 
+                              (sourceToVoxelY * sourceToVoxelY);
                 
-                float interpolated = Ia * wa + Ib * wb + Ic * wc + Id * wd;
-                acc += Ratio * interpolated;
+                accumulator += val * weight;
             }
-            acc /= nProj;  // Normalize by number of projections
             
-            volume[z * nx * ny + y * nx + x] = acc;
+            // Average over projections and apply angle scaling
+            float angleWeight = 2.0f * 3.14159265359f / nProj;
+            volume[iz * nVoxX * nVoxY + iy * nVoxX + ix] = accumulator * angleWeight;
         }
         """
         self.backproj_kernel = cp.RawKernel(kernel_source, "backproj_kernel")
@@ -803,21 +846,14 @@ class CBCTBackprojector:
         """Perform GPU warmup to initialize CUDA context and compile kernel"""
         logger.info("Performing GPU warmup...")
         try:
-            # Create small dummy data matching expected input format
+            # Create small dummy data
             dummy_nProj, dummy_nv, dummy_nu = 4, 32, 32
             dummy_nx, dummy_ny, dummy_nz = 16, 16, 16
             
-            # Create minimal test arrays
             dummy_filtered = cp.ones((dummy_nProj, dummy_nv, dummy_nu), dtype=cp.float32)
             dummy_volume = cp.zeros((dummy_nz, dummy_ny, dummy_nx), dtype=cp.float32)
-            dummy_us = cp.linspace(-1, 1, dummy_nu, dtype=cp.float32)
-            dummy_vs = cp.linspace(-1, 1, dummy_nv, dtype=cp.float32)
-            dummy_xs = cp.linspace(-1, 1, dummy_nx, dtype=cp.float32)
-            dummy_ys = cp.linspace(-1, 1, dummy_ny, dtype=cp.float32)
-            dummy_zs = cp.linspace(-1, 1, dummy_nz, dtype=cp.float32)
             dummy_angles = cp.linspace(0, cp.pi, dummy_nProj, dtype=cp.float32)
             
-            # Launch warmup kernel with minimal grid
             block_size = (4, 4, 4)
             grid_size = ((dummy_nx + 3) // 4, (dummy_ny + 3) // 4, (dummy_nz + 3) // 4)
             
@@ -825,12 +861,13 @@ class CBCTBackprojector:
                 grid_size, block_size,
                 (dummy_filtered.ravel(),
                  dummy_volume.ravel(),
-                 dummy_us, dummy_vs, dummy_xs, dummy_ys, dummy_zs,
                  dummy_angles,
                  cp.int32(dummy_nProj), cp.int32(dummy_nv), cp.int32(dummy_nu),
                  cp.int32(dummy_nx), cp.int32(dummy_ny), cp.int32(dummy_nz),
-                 cp.float32(1.0), cp.float32(1.0),  # dummy du, dv
-                 cp.float32(100.0), cp.float32(50.0))  # dummy DSD, DSO
+                 cp.float32(1.0), cp.float32(1.0), cp.float32(1.0),
+                 cp.float32(1.0), cp.float32(1.0),
+                 cp.float32(0.0), cp.float32(0.0),
+                 cp.float32(50.0), cp.float32(100.0))
             )
             
             cp.cuda.Device().synchronize()
@@ -838,56 +875,96 @@ class CBCTBackprojector:
             
         except Exception as e:
             logger.warning(f"GPU warmup failed: {e}")
-            # Continue execution - warmup failure shouldn't stop the pipeline
 
     def backproject(self, filtered: cp.ndarray) -> np.ndarray:
+        """
+        Perform cone beam backprojection matching ASTRA's geometry.
+        
+        Args:
+            filtered: Preprocessed and filtered projections (nProj, nDetRows, nDetCols)
+        
+        Returns:
+            Reconstructed volume as numpy array (nz, ny, nx)
+        """
         logger.info("Starting CUDA-accelerated backprojection")
-        nProj, nv, nu = filtered.shape
-        nx, ny, nz = self.config.num_voxels
         
-        # Prepare GPU arrays from derived parameters
-        param_us = cp.array(self.derived['param_us'], dtype=cp.float32)
-        param_vs = cp.array(self.derived['param_vs'], dtype=cp.float32)
-        param_xs = cp.array(self.derived['param_xs'], dtype=cp.float32)
-        param_ys = cp.array(self.derived['param_ys'], dtype=cp.float32)
-        param_zs = cp.array(self.derived['param_zs'], dtype=cp.float32)
+        nProj, nDetRows, nDetCols = filtered.shape
+        nVoxX, nVoxY, nVoxZ = self.config.num_voxels
         
-        # Compute projection angles in radians
-        start_angle_deg = getattr(self.config, 'start_angle', 0.0)
-        angle_step_deg = self.config.angle_step
-        angle_deg = cp.array(
-            [start_angle_deg + i * angle_step_deg for i in range(nProj)],
+        # Volume voxel sizes
+        volSizeX, volSizeY, volSizeZ = self.config.volume_size_mm
+        voxSizeX = volSizeX / nVoxX
+        voxSizeY = volSizeY / nVoxY
+        voxSizeZ = volSizeZ / nVoxZ
+        
+        # Detector pixel sizes
+        detSizeU, detSizeV = self.config.detector_size_mm
+        detPixelU = detSizeU / nDetCols
+        detPixelV = detSizeV / nDetRows
+        
+        # Detector offsets (convert from pixel units if necessary)
+        # detOffsetU, detOffsetV = self.config.detector_offset
+        detOffsetU = 357.5 * detPixelU  # Convert pixels to mm
+        detOffsetV = 357.4 * detPixelV  # Convert pixels to mm
+        
+        # Geometry distances
+        sourceDist = self.config.source_origin_dist
+        detectorDist = self.config.source_detector_dist
+        
+        # Compute projection angles
+        start_angle_rad = np.deg2rad(self.config.start_angle)
+        angle_step_rad = np.deg2rad(self.config.angle_step)
+        angles = cp.array(
+            [start_angle_rad + i * angle_step_rad for i in range(nProj)],
             dtype=cp.float32
         )
-        angle_rads = angle_deg * (np.pi / 180.0)  # convert degrees → radians
         
         # Initialize volume
-        volume = cp.zeros((nz, ny, nx), dtype=cp.float32)
+        volume = cp.zeros((nVoxZ, nVoxY, nVoxX), dtype=cp.float32)
         
-        # Prepare filtered projections - reshape to (nProj, nv, nu) contiguous
+        # Ensure filtered projections are contiguous
         filtered_contiguous = cp.ascontiguousarray(filtered)
         
         # Launch kernel
         block_size = (8, 8, 8)
-        grid_size = ((nx + block_size[0] - 1) // block_size[0],
-                     (ny + block_size[1] - 1) // block_size[1],
-                     (nz + block_size[2] - 1) // block_size[2])
+        grid_size = (
+            (nVoxX + block_size[0] - 1) // block_size[0],
+            (nVoxY + block_size[1] - 1) // block_size[1],
+            (nVoxZ + block_size[2] - 1) // block_size[2]
+        )
+        
+        logger.info(f"Kernel config - Grid: {grid_size}, Block: {block_size}")
+        logger.info(f"Geometry - Source dist: {sourceDist:.2f}mm, "
+                   f"Detector dist: {detectorDist:.2f}mm")
+        logger.info(f"Voxel size: ({voxSizeX:.4f}, {voxSizeY:.4f}, {voxSizeZ:.4f}) mm")
+        logger.info(f"Detector pixel: ({detPixelU:.4f}, {detPixelV:.4f}) mm")
+        logger.info(f"Detector offset: ({detOffsetU:.2f}, {detOffsetV:.2f}) mm")
         
         try:
             self.backproj_kernel(
                 grid_size, block_size,
                 (filtered_contiguous.ravel(),
                  volume.ravel(),
-                 param_us, param_vs, param_xs, param_ys, param_zs,
-                 angle_rads,
-                 cp.int32(nProj), cp.int32(nv), cp.int32(nu),
-                 cp.int32(nx), cp.int32(ny), cp.int32(nz),
-                 cp.float32(self.derived['param_du']),
-                 cp.float32(self.derived['param_dv']),
-                 cp.float32(self.config.source_detector_dist),
-                 cp.float32(self.config.source_origin_dist))
+                 angles,
+                 cp.int32(nProj), cp.int32(nDetRows), cp.int32(nDetCols),
+                 cp.int32(nVoxX), cp.int32(nVoxY), cp.int32(nVoxZ),
+                 cp.float32(voxSizeX), cp.float32(voxSizeY), cp.float32(voxSizeZ),
+                 cp.float32(detPixelU), cp.float32(detPixelV),
+                 cp.float32(detOffsetU), cp.float32(detOffsetV),
+                 cp.float32(sourceDist), cp.float32(detectorDist))
             )
             cp.cuda.Device().synchronize()
+            
+            # Debug output
+            vol_np = cp.asnumpy(volume)
+            logger.info(f"Volume stats - min: {vol_np.min():.6f}, "
+                       f"max: {vol_np.max():.6f}, "
+                       f"mean: {vol_np.mean():.6f}, "
+                       f"std: {vol_np.std():.6f}")
+            
+            non_zero = np.count_nonzero(vol_np)
+            total = vol_np.size
+            logger.info(f"Non-zero voxels: {non_zero}/{total} ({100*non_zero/total:.2f}%)")
             
         except Exception as e:
             logger.error(f"CUDA backprojection kernel failed: {e}")
