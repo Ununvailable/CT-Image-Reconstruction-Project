@@ -27,7 +27,7 @@ import sys
 import time
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Tuple, List, Optional, Dict, Any
 
 import numpy as np
@@ -56,14 +56,14 @@ class CBCTConfig:
     detector_offset: Tuple[float, float] = (0.0, 0.0)  # in mm by default
 
     # If metadata gives offsets in pixels set this True (then convert to mm = pixels * du)
-    detector_offset_in_pixels: bool = False
+    detector_offset_in_pixels: bool = True
 
     # Acquisition geometry
     num_projections: int = 360
     angle_step: float = 0.225       # degrees
     start_angle: float = 270.0      # degrees
-    source_origin_dist: float = 212.515
-    source_detector_dist: float = 1304.5
+    source_origin_dist: float = 28.625365287711134
+    source_detector_dist: float = 699.9996522369905
 
     # Projection dtype for raw files
     projection_dtype: str = "uint16"
@@ -147,23 +147,23 @@ class CBCTConfig:
         if self._derived_cache is not None:
             return self._derived_cache
 
-        # nx, ny, nz = self.num_voxels
-        # sx, sy, sz = self.volume_size_mm
-        # nu, nv = self.detector_pixels
-        # su, sv = self.detector_size_mm
-
-        # dx = sx / nx
-        # dy = sy / ny
-        # dz = sz / nz
-        # du = su / nu
-        # dv = sv / nv
-
         nx, ny, nz = self.num_voxels
         sx, sy, sz = self.volume_size_mm
         nu, nv = self.detector_pixels
         su, sv = self.detector_size_mm
-        dx, dy, dz = self.voxel_size  # Override with explicit voxel size if provided
-        du, dv = self.detector_size_mm
+
+        dx = sx / nx
+        dy = sy / ny
+        dz = sz / nz
+        du = su / nu
+        dv = sv / nv
+
+        # nx, ny, nz = self.num_voxels
+        # sx, sy, sz = self.volume_size_mm
+        # nu, nv = self.detector_pixels
+        # su, sv = self.detector_size_mm
+        # dx, dy, dz = self.voxel_size  # Override with explicit voxel size if provided
+        # du, dv = self.detector_size_mm
 
         us = (np.arange(nu) - nu / 2.0 + 0.5) * du  # centered pixel centers (mm)
         vs = (np.arange(nv) - nv / 2.0 + 0.5) * dv
@@ -533,8 +533,11 @@ class CBCTArrayBackprojector:
         dv = float(self.config.detector_size_mm[1] / detRows)
 
         # Convert detector_offset in mm (or interpret as pixels if flagged)
-        detOffsetU_mm = float(self.config.detector_offset[0])
-        detOffsetV_mm = float(self.config.detector_offset[1])
+        # detOffsetU_mm = float(self.config.detector_offset[0])
+        # detOffsetV_mm = float(self.config.detector_offset[1])
+        # Offset from detector center in mm
+        detOffsetU_mm = (float(self.config.detector_offset[0]) - detCols/2.0) * du
+        detOffsetV_mm = (float(self.config.detector_offset[1]) - detRows/2.0) * dv
         if self.config.detector_offset_in_pixels:
             detOffsetU_mm = detOffsetU_mm * du
             detOffsetV_mm = detOffsetV_mm * dv
@@ -606,6 +609,14 @@ def save_pickle(obj, path):
     with open(path, "wb") as f:
         pickle.dump(obj, f)
 
+def save_config_snapshot(config: CBCTConfig, runtime_info: Dict[str, Any], path: str):
+    import pickle
+    snapshot = asdict(config)
+    snapshot.update(runtime_info)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as f:
+        pickle.dump(snapshot, f)
+
 def run_pipeline(dataset_folder: str, metadata_filename: str = "metadata.json"):
 
     cfg = CBCTConfig.create_with_metadata(dataset_folder, metadata_filename)
@@ -632,6 +643,8 @@ def run_pipeline(dataset_folder: str, metadata_filename: str = "metadata.json"):
     save_pickle(recon, os.path.join(cfg.output_path, "volume.pickle"))
     t1 = time.time()
     logger.info(f"Pipeline complete in {t1 - t0:.2f} s")
+    save_config_snapshot(cfg, {"runtime_seconds": t1 - t0}, os.path.join(cfg.output_path, "config_snapshot.pickle"))
+
     return recon
 
 # ---------------------------
