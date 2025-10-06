@@ -554,7 +554,7 @@ class CBCTArrayBackprojector:
 
         # kernel launch params
         # tune block size for occupancy: (8,8,8) is a reasonable start
-        block = (8, 8, 8)
+        block = (16, 16, 4)
         grid = ((nx + block[0] - 1) // block[0],
                 (ny + block[1] - 1) // block[1],
                 (nz + block[2] - 1) // block[2])

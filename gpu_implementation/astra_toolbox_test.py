@@ -483,8 +483,8 @@ def main():
         projections = data_loader.load_projections(projection_folder)
         
         # 2. Preprocess projections
-        # projections_processed = preprocessor.preprocess_projections(projections)
-        projections_processed = projections  # Skip preprocessing for testing
+        projections_processed = preprocessor.preprocess_projections(projections)
+        # projections_processed = projections  # Skip preprocessing for testing
 
         # 3. Reconstruct volume
         start_total = time.perf_counter()
