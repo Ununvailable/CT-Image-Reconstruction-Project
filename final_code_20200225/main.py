@@ -196,7 +196,7 @@ def load_img( path_ls):
     return proj
 
 
-path_ls = ['E:/All_project_python/jupyter_path/final_code_recon/For_AIA_code/Cupy_model/625_512/' + str(i) + '.jpg' for i in range(nProj)]
+path_ls = ['data/20200225_AXI_final_code/slices' + str(i) + '.jpg' for i in range(nProj)]
 print('AAAAAAAAAAAAAAAAAAAAA')
 if __name__ == '__main__':
     start = time.time()
@@ -279,7 +279,7 @@ if __name__ == '__main__':
     vols = cp.asnumpy(vols)
     print('Time cost: ', time.time() - start)
     
-    with open('vols.pickle', 'wb') as f:
+    with open('data/20200225_AXI_final_code/results/vols.pickle', 'wb') as f:
         pickle.dump(vols, f)
     
     

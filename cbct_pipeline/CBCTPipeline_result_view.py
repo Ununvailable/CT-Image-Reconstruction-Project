@@ -31,5 +31,5 @@ def view_pickled_volume_napari(path: str):
     napari.run()
 
 if __name__ == "__main__":
-    # print(read_pickled_config(path='data/20240530_ITRI_downsampled_4x/results/config_snapshot.pickle'))
-    view_pickled_volume_napari(path='data/20240530_ITRI_downsampled_4x/results/volume.pickle')
+    print(read_pickled_config(path='data/20240530_ITRI_downsampled_4x/results_astra/config_snapshot.pickle'))
+    view_pickled_volume_napari(path='data/20240530_ITRI_downsampled_4x/results_astra/volume.pickle')
