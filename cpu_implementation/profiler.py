@@ -3,7 +3,7 @@ import pstats
 import io
 import pandas as pd
 from PIL import Image
-from filtbackproj_multicore_full_parallelization import *
+from filtbackproj_multicore_hybrid_vectorized_para import *
 
 def profile_to_dataframe(func, *args, **kwargs):
     """Profile a function and return the results as a DataFrame."""
