@@ -117,7 +117,7 @@ def calculate_efficiency_metrics(results, baseline_cores=1):
 
 def scalability_test(backproj_module, implementation_name):
     """Test backprojection scalability for a given implementation."""
-    core_counts = [1, 2, 3, 4, 5, 6, 7, 8]
+    core_counts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     max_cores = psutil.cpu_count()
     core_counts = [c for c in core_counts if c <= max_cores]
 
@@ -159,7 +159,8 @@ def scalability_test(backproj_module, implementation_name):
 
 def create_comparison_plots(metrics_tb, metrics_pb, cores_tb, cores_pb, timestamp):
     """Generate comparison plots for thread-based and process-based implementations."""
-    fig, axes = plt.subplots(1, 4, figsize=(18, 4))
+    # fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 3))
     title_size = 18
     label_size = 14
 
@@ -197,23 +198,23 @@ def create_comparison_plots(metrics_tb, metrics_pb, cores_tb, cores_pb, timestam
     axes[1].grid(True, alpha=0.3)
 
     # Efficiency Per Cores
-    axes[2].plot(cores_t, efficiency_t, 'o-', label='Thread-Based', linewidth=2, markersize=8)
-    axes[2].plot(cores_p, efficiency_p, 's-', label='Process-Based', linewidth=2, markersize=8)
-    axes[2].axhline(100, color='gray', linestyle='--', alpha=0.5, label='Ideal')
-    axes[2].set_xlabel('Cores', fontsize=label_size)
-    axes[2].set_ylabel('Efficiency (%)', fontsize=label_size)
-    axes[2].set_title('Efficiency Per Cores', fontsize=title_size, fontweight='bold')
-    axes[2].legend(fontsize=10)
-    axes[2].grid(True, alpha=0.3)
+    # axes[2].plot(cores_t, efficiency_t, 'o-', label='Thread-Based', linewidth=2, markersize=8)
+    # axes[2].plot(cores_p, efficiency_p, 's-', label='Process-Based', linewidth=2, markersize=8)
+    # axes[2].axhline(100, color='gray', linestyle='--', alpha=0.5, label='Ideal')
+    # axes[2].set_xlabel('Cores', fontsize=label_size)
+    # axes[2].set_ylabel('Efficiency (%)', fontsize=label_size)
+    # axes[2].set_title('Efficiency Per Cores', fontsize=title_size, fontweight='bold')
+    # axes[2].legend(fontsize=10)
+    # axes[2].grid(True, alpha=0.3)
 
     # Memory Usage vs Cores
-    axes[3].plot(cores_t, memory_t, 'o-', label='Thread-Based', linewidth=2, markersize=8, color='red')
-    axes[3].plot(cores_p, memory_p, 's-', label='Process-Based', linewidth=2, markersize=8, color='orange')
-    axes[3].set_xlabel('Cores', fontsize=label_size)
-    axes[3].set_ylabel('Peak Memory (GB)', fontsize=label_size)
-    axes[3].set_title('Memory Usage vs Cores', fontsize=title_size, fontweight='bold')
-    axes[3].legend(fontsize=10)
-    axes[3].grid(True, alpha=0.3)
+    axes[2].plot(cores_t, memory_t, 'o-', label='Thread-Based', linewidth=2, markersize=8, color='red')
+    axes[2].plot(cores_p, memory_p, 's-', label='Process-Based', linewidth=2, markersize=8, color='orange')
+    axes[2].set_xlabel('Cores', fontsize=label_size)
+    axes[2].set_ylabel('Peak Memory (GB)', fontsize=label_size)
+    axes[2].set_title('Memory Usage vs Cores', fontsize=title_size, fontweight='bold')
+    axes[2].legend(fontsize=10)
+    axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
