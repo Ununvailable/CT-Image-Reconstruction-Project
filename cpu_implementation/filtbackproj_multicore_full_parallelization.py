@@ -129,7 +129,7 @@ if __name__ == '__main__':
     myImg = Image.open('data/phantoms/004085_01_02_107.png').convert('L')
 
     myImgPad, c0, c1 = padImage(myImg)
-    dTheta = 0.1
+    dTheta = 1
     theta = np.arange(0, 361, dTheta)
 
     print('Getting projections (parallel)...')
@@ -150,15 +150,34 @@ if __name__ == '__main__':
     n0, n1 = myImg.size
     reconImg = reconImg.crop((c0, c1, c0 + n0, c1 + n1))
 
-    fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
+    # fig3, (ax1, ax2, ax3, ax4, ax5)= plt.subplots(1, 5, figsize=(12, 4))
+    # ax1.imshow(myImg, cmap='gray')
+    # ax1.set_title('Original Image')
+    # ax2.imshow(reconImg, cmap='gray')
+    # ax2.set_title('Filtered Backprojected Image')
+    # ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray')
+    # ax3.set_title('Error')
+    # ax4.imshow(mySino, cmap='gray')
+    # ax4.set_title('Captured Sinogram')
+    # ax5.imshow(filtSino, cmap='gray')
+    # ax5.set_title('Filtered Sinogram')
+    # plt.show()
+
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(16, 4))
+
     ax1.imshow(myImg, cmap='gray')
     ax1.set_title('Original Image')
-    ax2.imshow(reconImg, cmap='gray')
-    ax2.set_title('Filtered Backprojected Image')
-    ax3.imshow(ImageChops.difference(myImg, reconImg), cmap='gray')
-    ax3.set_title('Error')
-    ax4.imshow(mySino, cmap='gray')
-    ax4.set_title('Captured Sinogram')
-    ax5.imshow(filtSino, cmap='gray')
-    ax5.set_title('Filtered Sinogram')
+    ax1.set_aspect('equal')
+
+    ax2.imshow(mySino, cmap='gray', aspect='auto')
+    ax2.set_title('Projected Sinogram')
+
+    ax3.imshow(filtSino, cmap='gray', aspect='auto')
+    ax3.set_title('Filtered Sinogram')
+
+    ax4.imshow(reconImg, cmap='gray')
+    ax4.set_title('Result Image')
+    ax4.set_aspect('equal')
+
+    plt.tight_layout() 
     plt.show()
