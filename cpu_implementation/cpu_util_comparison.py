@@ -160,17 +160,11 @@ def scalability_test(backproj_module, implementation_name):
 
 def create_comparison_plots(metrics_tb, metrics_pb, cores_tb, cores_pb, timestamp):
     """Generate comparison plots for thread-based and process-based implementations."""
-<<<<<<< HEAD
     # fig, axes = plt.subplots(1, 3, figsize=(18, 4))
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3))
-    title_size = 18
-    label_size = 14
-=======
     fig, axes = plt.subplots(1, 3, figsize=(10, 3), dpi=100)
     title_size = 20
     label_size = 18
     tick_size = 11
->>>>>>> 90fb1e34d55e1a821a316c31a92dbe91df5a0fe8
 
     # Extract data
     cores_t = sorted(metrics_tb.keys())
