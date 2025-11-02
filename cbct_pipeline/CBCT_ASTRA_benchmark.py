@@ -44,7 +44,7 @@ class ASTRACBCTConfig:
     raw_resolution: Tuple[int, int] = (3072, 3072)  # (height, width)
     raw_bit_depth: str = "uint16"
     raw_endianness: str = "little"
-    raw_header_size: int = 96  # bytes
+    raw_header_size: int = 0  # bytes
     
     # Processing parameters
     dark_current: float = 100.0
@@ -62,13 +62,28 @@ class ASTRACBCTConfig:
     
     # Memory management
     projection_batch_size: int = 50
-    astra_downsample_factor: int = 1  # Placeholder
+    astra_downsample_factor: int = 4  # Placeholder
     
     # IO paths
-    input_path: str = "data/slices"
-    output_path: str = "data/results_astra"
+    input_path: str = "slices/"
+    output_path: str = "results_astra/"
     
     @classmethod
+    # def create_with_metadata(cls, folder: str, metadata_filename: str = "metadata.json"):
+    #     """Create config from metadata.json file"""
+    #     cfg = cls()
+    #     cfg.input_path = f"{folder}/slices"
+    #     cfg.output_path = f"{folder}/results_astra"
+        
+    #     meta_path = f"{cfg.input_path}/{metadata_filename}"
+    #     if os.path.exists(meta_path):
+    #         with open(meta_path, "r") as f:
+    #             meta = json.load(f)
+    #         cfg._apply_metadata(meta)
+    #         logger.info(f"Loaded metadata from {meta_path}")
+    #     else:
+    #         logger.warning(f"No metadata file at {meta_path}, using defaults")
+    #     return cfg
     def create_with_metadata(cls, folder: str, metadata_filename: str = "metadata.json"):
         """Create config from metadata.json file"""
         cfg = cls()
@@ -77,7 +92,7 @@ class ASTRACBCTConfig:
         
         meta_path = f"{cfg.input_path}/{metadata_filename}"
         if os.path.exists(meta_path):
-            with open(meta_path, "r") as f:
+            with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
             cfg._apply_metadata(meta)
             logger.info(f"Loaded metadata from {meta_path}")
@@ -101,14 +116,18 @@ class ASTRACBCTConfig:
             det_size = tuple(float(x) for x in meta["detector_size_mm"])
             self.pixel_size_u = det_size[0] / self.detector_size[1]
             self.pixel_size_v = det_size[1] / self.detector_size[0]
+        if "pixel_size_mm" in meta:
+            pixel_sizes = meta["pixel_size_mm"]
+            self.pixel_size_u = float(pixel_sizes[0])
+            self.pixel_size_v = float(pixel_sizes[1])
         if "detector_offset" in meta:
             offsets = tuple(float(x) for x in meta["detector_offset"])
             self.detector_offset_u = offsets[0]
             self.detector_offset_v = offsets[1]
         if "volume_voxels" in meta:
             self.volume_size = tuple(int(x) for x in meta["volume_voxels"])
-        if "voxel_size" in meta:
-            vs = meta["voxel_size"]
+        if "voxel_size_mm" in meta:
+            vs = meta["voxel_size_mm"]
             if isinstance(vs, (list, tuple)):
                 self.voxel_size = float(vs[0])
             else:
@@ -117,6 +136,20 @@ class ASTRACBCTConfig:
             self.source_object_dist = float(meta["source_origin_dist"])
         if "source_detector_dist" in meta:
             self.source_detector_dist = float(meta["source_detector_dist"])
+        if "astra_downsample_factor" in meta:
+            self.astra_downsample_factor = int(meta["astra_downsample_factor"])
+
+        # Preprocessing parameters
+        if "dark_current" in meta:
+            self.dark_current = float(meta["dark_current"])
+        if "apply_log_correction" in meta:
+            self.apply_log_correction = bool(meta["apply_log_correction"])
+        if "apply_bad_pixel_correction" in meta:
+            self.apply_bad_pixel_correction = bool(meta["apply_bad_pixel_correction"])
+        if "apply_noise_reduction" in meta:
+            self.apply_noise_reduction = bool(meta["apply_noise_reduction"])
+        if "apply_truncation_correction" in meta:
+            self.apply_truncation_correction = bool(meta["apply_truncation_correction"])
         
         # RAW file parameters
         if "resolution" in meta:
@@ -141,11 +174,21 @@ class ASTRACBCTConfig:
             self.raw_bit_depth = str(meta["projection_dtype"])
 
 
-def discover_projection_files(folder: str, allowed_exts=(".tiff", ".tif", ".jpg", ".jpeg", ".png", ".raw")) -> List[str]:
-    """Find all projection files in folder"""
-    pattern = os.path.join(folder, "*")
-    files = [f for f in sorted(glob.glob(pattern)) 
-             if os.path.splitext(f)[1].lower() in allowed_exts]
+def discover_projection_files(folder: str, file_format: str = None, allowed_exts=None) -> List[str]:
+    """Find projection files, optionally filtered by format"""
+    if file_format and file_format.lower() == "raw":
+        pattern = os.path.join(folder, "*.raw")
+        files = sorted(glob.glob(pattern))
+    elif allowed_exts:
+        pattern = os.path.join(folder, "*")
+        files = [f for f in sorted(glob.glob(pattern)) if os.path.splitext(f)[1].lower() in allowed_exts]
+    else:
+        default_exts = (".tiff", ".tif", ".jpg", ".jpeg", ".png", ".raw")
+        pattern = os.path.join(folder, "*")
+        files = [f for f in sorted(glob.glob(pattern)) if os.path.splitext(f)[1].lower() in default_exts]
+    
+    if len(files) == 0:
+        logger.warning(f"No projection files found in {folder}")
     return files
 
 
@@ -171,32 +214,41 @@ class CBCTDataLoader:
         with Image.open(path) as img:
             return np.array(img.convert("F"), dtype=np.float32)
     
-    def _load_raw(self, path: str) -> np.ndarray:
-        """Load RAW file with metadata-driven parameters"""
-        dtype = np.dtype(self.config.raw_bit_depth)
+    def _load_raw(self, path: str, header_bytes: int = 0, endianness: str = "native") -> np.ndarray:
+        """Load RAW file with optional header skip and endianness control"""
+        base_dtype = np.dtype(self.config.raw_bit_depth)
         
-        # Handle endianness
-        if self.config.raw_endianness == "big":
-            dtype = dtype.newbyteorder('>')
-        elif self.config.raw_endianness == "little":
-            dtype = dtype.newbyteorder('<')
+        if endianness == "little":
+            dtype = base_dtype.newbyteorder('<')
+        elif endianness == "big":
+            dtype = base_dtype.newbyteorder('>')
+        else:
+            dtype = base_dtype
         
         height, width = self.config.raw_resolution
-        expected_size = self.config.raw_header_size + (height * width * dtype.itemsize)
+        expected_data_size = height * width * dtype.itemsize
+        expected_total_size = header_bytes + expected_data_size
         actual_size = os.path.getsize(path)
         
-        if actual_size != expected_size:
-            logger.warning(f"RAW file size mismatch: expected {expected_size}, got {actual_size}")
+        # logger.info(f"RAW file {os.path.basename(path)}: size={actual_size}, expected={expected_total_size}, header={header_bytes}")
+        
+        if actual_size < expected_total_size:
+            logger.warning(f"File too small; recalculating header size")
+            header_bytes = actual_size - expected_data_size
+            if header_bytes < 0:
+                logger.error(f"Cannot determine valid header size")
+                raise ValueError(f"File size {actual_size} incompatible with resolution {height}×{width}")
+            logger.info(f"Adjusted header to {header_bytes} bytes")
         
         with open(path, "rb") as f:
-            # Skip header
-            f.seek(self.config.raw_header_size)
+            if header_bytes > 0:
+                f.seek(header_bytes)
             data = np.frombuffer(f.read(), dtype=dtype)
         
         try:
             data = data.reshape((height, width))
         except ValueError:
-            logger.warning(f"Reshape failed, trying transpose")
+            logger.warning(f"Reshape ({height}, {width}) failed with {len(data)} elements; trying transpose")
             data = data.reshape((width, height)).T
         
         return data.astype(np.float32)
@@ -206,7 +258,9 @@ class CBCTDataLoader:
         if folder is None:
             folder = self.config.input_path
         
-        files = discover_projection_files(folder)
+        file_format = getattr(self.config, 'file_format', None)
+        files = discover_projection_files(folder, file_format=file_format)
+        
         if len(files) == 0:
             raise RuntimeError(f"No projection files found in {folder}")
         
@@ -214,51 +268,31 @@ class CBCTDataLoader:
             logger.warning(f"Found {len(files)} files but config expects {self.config.num_projections}")
         files = files[:self.config.num_projections]
         
-        # Load first projection to determine size
-        ext = os.path.splitext(files[0])[1].lower()
-        first_proj = self._load_projection(files[0], ext)
-        original_h, original_w = first_proj.shape
+        header_bytes = self.config.raw_header_size
+        endianness = self.config.raw_endianness
         
-        logger.info(f"Original projection size: {original_h} x {original_w}")
+        projections = []
+        ds = self.config.astra_downsample_factor
+        for path in tqdm(files, desc="Loading projections"):
+            try:
+                ext = os.path.splitext(path)[1].lower()
+                if ext in (".tif", ".tiff"):
+                    proj = self._load_tiff(path)
+                elif ext in (".png", ".jpg", ".jpeg"):
+                    proj = self._load_image(path)
+                elif ext == ".raw":
+                    proj = self._load_raw(path, header_bytes=header_bytes, endianness=endianness)
+                else:
+                    raise RuntimeError(f"Unsupported file format: {ext}")
+                proj = proj[::ds, ::ds]  # Downsample
+                projections.append(proj)
+            except Exception as e:
+                logger.error(f"Failed to load {path}: {e}")
+                raise
         
-        # Apply downsampling
-        if self.config.astra_downsample_factor > 1:
-            ds = self.config.astra_downsample_factor
-            new_h = original_h // ds
-            new_w = original_w // ds
-            logger.info(f"Downsampling to: {new_h} x {new_w}")
-        else:
-            new_h, new_w = original_h, original_w
-        
-        # Allocate array
-        projections = np.zeros((self.config.num_projections, new_h, new_w), dtype=np.float32)
-        
-        # Load in batches
-        batch_size = self.config.projection_batch_size
-        num_batches = (len(files) + batch_size - 1) // batch_size
-        
-        for batch_idx in tqdm(range(num_batches), desc="Loading projections"):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, len(files))
-            
-            for i in range(batch_start, batch_end):
-                try:
-                    ext = os.path.splitext(files[i])[1].lower()
-                    proj = self._load_projection(files[i], ext)
-                    
-                    # Downsample if needed
-                    if self.config.astra_downsample_factor > 1:
-                        ds = self.config.astra_downsample_factor
-                        proj = proj[::ds, ::ds]
-                    
-                    projections[i] = proj
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to load {files[i]}: {e}")
-                    projections[i] = np.zeros((new_h, new_w), dtype=np.float32)
-        
-        logger.info(f"Loaded projection stack shape: {projections.shape}")
-        return projections
+        stack = np.stack(projections, axis=0).astype(np.float32)
+        logger.info(f"Loaded projection stack shape: {stack.shape}")
+        return stack
     
     def _load_projection(self, path: str, ext: str) -> np.ndarray:
         """Load single projection based on extension"""
@@ -267,7 +301,8 @@ class CBCTDataLoader:
         elif ext in (".png", ".jpg", ".jpeg"):
             return self._load_image(path)
         elif ext == ".raw":
-            return self._load_raw(path)
+            return self._load_raw(path, header_bytes=self.config.raw_header_size, 
+                                 endianness=self.config.raw_endianness)
         else:
             raise RuntimeError(f"Unsupported file format: {ext}")
 
@@ -295,7 +330,7 @@ class CBCTPreprocessor:
         
         if self.config.apply_noise_reduction:
             processed = self._noise_reduction(processed)
-        
+
         if self.config.apply_truncation_correction:
             processed = self._truncation_correction(processed)
         
@@ -393,6 +428,8 @@ class ASTRAReconstructor:
             self.config.source_detector_dist - self.config.source_object_dist,
             detector_offset_u - det_cols/2,
             detector_offset_v - det_rows/2
+            # detector_offset_u,
+            # detector_offset_v  
         )
         
         vol_x, vol_y, vol_z = self.config.volume_size
@@ -403,6 +440,9 @@ class ASTRAReconstructor:
             -vol_z/2 * self.config.voxel_size, vol_z/2 * self.config.voxel_size
         )
         
+        print(f"DEBUG proj_geom: {proj_geom}")
+        print(f"DEBUG vol_geom: {vol_geom}")
+
         return proj_geom, vol_geom
     
     def reconstruct(self, projections: np.ndarray) -> np.ndarray:
@@ -411,7 +451,15 @@ class ASTRAReconstructor:
         
         try:
             proj_geom, vol_geom = self.create_geometry(projections)
+            print(f"DEBUG BEFORE TRANSPOSE: projections.shape = {projections.shape}")
+            print(f"DEBUG BEFORE TRANSPOSE: projections range = [{projections.min()}, {projections.max()}]")
+
             projections = projections.transpose(1, 0, 2)  # (rows, angles, cols)
+
+            print(f"DEBUG AFTER TRANSPOSE: projections.shape = {projections.shape}")
+            print(f"DEBUG AFTER TRANSPOSE: projections range = [{projections.min()}, {projections.max()}]")
+            print(f"DEBUG: proj_geom angles = {len(proj_geom['ProjectionAngles'])}")
+            print(f"DEBUG: proj_geom detector = {proj_geom['DetectorRowCount']} x {proj_geom['DetectorColCount']}")
             
             proj_id = astra.data3d.create('-proj3d', proj_geom, projections)
             vol_id = astra.data3d.create('-vol', vol_geom)
@@ -509,7 +557,7 @@ if __name__ == "__main__":
     import argparse
     
     ap = argparse.ArgumentParser(description="ASTRA CBCT Reconstruction with RAW file support")
-    ap.add_argument("--input", "-i", default="data/20240530_ITRI_downsampled_4x",
+    ap.add_argument("--input", "-i", default="data/CBCT_3D_SheppLogan",
                     help="Dataset folder containing slices/ and metadata.json")
     ap.add_argument("--metadata", "-m", default="metadata.json",
                     help="Metadata filename")

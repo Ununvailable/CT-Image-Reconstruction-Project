@@ -35,6 +35,7 @@ import cupy as cp
 from PIL import Image
 from tqdm import tqdm
 import tifffile
+import threading
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("cbct_array")
@@ -520,14 +521,152 @@ def backproject_single_projection(args):
     return volume
 
 
+def bilinear_interpolate_batch(proj, pixU, pixV):
+    """
+    Vectorized bilinear interpolation for multiple (u,v) coordinates.
+    proj: (detRows, detCols) float32 array
+    pixU, pixV: (N,) float32 arrays of pixel coordinates
+    Returns: (N,) interpolated values
+    """
+    detRows, detCols = proj.shape
+    
+    pixU = np.clip(pixU, 0.0, detCols - 1.0001)
+    pixV = np.clip(pixV, 0.0, detRows - 1.0001)
+    
+    u0 = np.floor(pixU).astype(np.int32)
+    v0 = np.floor(pixV).astype(np.int32)
+    u1 = np.minimum(u0 + 1, detCols - 1)
+    v1 = np.minimum(v0 + 1, detRows - 1)
+    
+    fu = (pixU - u0).astype(np.float32)
+    fv = (pixV - v0).astype(np.float32)
+    
+    p00 = proj[v0, u0]
+    p01 = proj[v0, u1]
+    p10 = proj[v1, u0]
+    p11 = proj[v1, u1]
+    
+    val = ((1.0 - fu) * (1.0 - fv) * p00 +
+           fu * (1.0 - fv) * p01 +
+           (1.0 - fu) * fv * p10 +
+           fu * fv * p11)
+    
+    return val
+
+
+def backproject_single_projection_direct(proj, angle, nx, ny, nz, dx, dy, dz,
+                                         detCols, detRows, du, dv,
+                                         detOffsetU_mm, detOffsetV_mm,
+                                         sourceDist, detectorDist, angleWeight,
+                                         volume_lock, volume_shared, chunk_size=64):
+    """
+    Backproject a single projection directly into shared volume.
+    Processes z-slices sequentially, accumulating into volume_shared.
+    """
+    cosA = np.float32(np.cos(angle))
+    sinA = np.float32(np.sin(angle))
+    
+    sourceDist_f32 = np.float32(sourceDist)
+    detectorDist_f32 = np.float32(detectorDist)
+    du_f32 = np.float32(du)
+    dv_f32 = np.float32(dv)
+    detCols_f32 = np.float32(detCols)
+    detRows_f32 = np.float32(detRows)
+    angleWeight_f32 = np.float32(angleWeight)
+    detOffsetU_mm_f32 = np.float32(detOffsetU_mm)
+    detOffsetV_mm_f32 = np.float32(detOffsetV_mm)
+    
+    # Pre-compute base coordinates
+    vx_base = np.arange(nx, dtype=np.float32)
+    vx_base = (vx_base - nx / 2.0 + 0.5) * np.float32(dx)
+    
+    vy_base = np.arange(ny, dtype=np.float32)
+    vy_base = (vy_base - ny / 2.0 + 0.5) * np.float32(dy)
+    
+    dz_f32 = np.float32(dz)
+    
+    # Process z-slices in chunks
+    for z_start in range(0, nz, chunk_size):
+        z_end = min(z_start + chunk_size, nz)
+        
+        # Accumulate slice contributions
+        slice_contrib = np.zeros((z_end - z_start, ny, nx), dtype=np.float32)
+        
+        for iz_local, iz in enumerate(range(z_start, z_end)):
+            vz = (iz - nz / 2.0 + 0.5) * dz_f32
+            pz = vz
+            
+            # Process x-y in chunks
+            for y_start in range(0, ny, chunk_size):
+                y_end = min(y_start + chunk_size, ny)
+                
+                for x_start in range(0, nx, chunk_size):
+                    x_end = min(x_start + chunk_size, nx)
+                    
+                    VX, VY = np.meshgrid(vx_base[x_start:x_end], 
+                                         vy_base[y_start:y_end], indexing='ij')
+                    VX = VX.astype(np.float32)
+                    VY = VY.astype(np.float32)
+                    
+                    # Rotate
+                    PX = VX * cosA + VY * sinA
+                    PY = -VX * sinA + VY * cosA
+                    
+                    # Source-to-voxel distance
+                    sourceToVoxelY = PY + sourceDist_f32
+                    valid = sourceToVoxelY > 0.0
+                    
+                    # Project onto detector
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        projectionScale = detectorDist_f32 / np.maximum(sourceToVoxelY, 1e-6)
+                        detU = PX * projectionScale - detOffsetU_mm_f32
+                        detV = pz * projectionScale - detOffsetV_mm_f32
+                        
+                        pixU = detU / du_f32 + detCols_f32 / 2.0
+                        pixV = detV / dv_f32 + detRows_f32 / 2.0
+                    
+                    # Bounds check
+                    in_bounds = ((pixU >= 0.0) & (pixU < detCols - 1.0) &
+                                 (pixV >= 0.0) & (pixV < detRows - 1.0) &
+                                 valid)
+                    
+                    if np.any(in_bounds):
+                        valid_pixU = pixU[in_bounds].astype(np.float32)
+                        valid_pixV = pixV[in_bounds].astype(np.float32)
+                        
+                        interp_vals = bilinear_interpolate_batch(proj, valid_pixU, valid_pixV)
+                        
+                        valid_sourceToVoxelY = sourceToVoxelY[in_bounds]
+                        weight = (sourceDist_f32 * sourceDist_f32) / (valid_sourceToVoxelY * valid_sourceToVoxelY)
+                        contrib = interp_vals * weight * angleWeight_f32
+                        
+                        slice_contrib[iz_local, y_start:y_end, x_start:x_end][in_bounds] += contrib
+        
+        # Thread-safe accumulation into shared volume
+        with volume_lock:
+            volume_shared[z_start:z_end] += slice_contrib
+
+
 class CBCTArrayBackprojector:
     def __init__(self, config, geometry: CBCTGeometry):
         self.config = config
         self.geometry = geometry
-        self.num_threads = os.cpu_count()
-        logger.info(f"CPU Backprojector initialized with {self.num_threads} threads")
+        self.num_threads = max(1, os.cpu_count() // 2)  # Use half cores to limit memory
+        logger.info(f"Vectorized CPU Backprojector initialized with {self.num_threads} threads")
     
-    def backproject(self, filtered: np.ndarray) -> np.ndarray:
+    def backproject(self, filtered) -> np.ndarray:
+        """
+        Backproject filtered projections using vectorized operations with shared accumulation.
+        filtered: (nProj, detRows, detCols) float32 array (NumPy or CuPy)
+        Returns: (nz, ny, nx) volume
+        """
+        # Convert CuPy to NumPy if needed
+        if hasattr(filtered, 'get'):
+            logger.info("Converting CuPy array to NumPy for CPU backprojection")
+            filtered = filtered.get()
+        
+        filtered = np.ascontiguousarray(filtered, dtype=np.float32)
+        
         nProj, detRows, detCols = filtered.shape
         nx, ny, nz = self.config.num_voxels
         
@@ -538,7 +677,7 @@ class CBCTArrayBackprojector:
         du = float(self.config.detector_size_mm[0] / detCols)
         dv = float(self.config.detector_size_mm[1] / detRows)
         
-        # Detector offset
+        # Match GPU kernel: offset from detector center
         detOffsetU_mm = (float(self.config.detector_offset[0]) - detCols/2.0) * du
         detOffsetV_mm = (float(self.config.detector_offset[1]) - detRows/2.0) * dv
         
@@ -552,45 +691,46 @@ class CBCTArrayBackprojector:
         angles = self.geometry.angles_rad()
         angleWeight = 2.0 * np.pi / max(1, nProj)
         
-        logger.info(f"Backprojection: processing {nProj} projections using {self.num_threads} threads")
+        logger.info(f"Vectorized backprojection: processing {nProj} projections "
+                   f"with {self.num_threads} threads")
+        logger.info(f"Volume: {nx}×{ny}×{nz}, Detector: {detCols}×{detRows}")
+        
+        # Create shared volume (once, for all threads)
+        volume = np.zeros((nz, ny, nx), dtype=np.float32)
+        volume_lock = threading.Lock()
         
         # Prepare arguments for each projection
-        args_list = []
-        for i in range(nProj):
-            proj = filtered[i].astype(np.float32)
-            args = (proj, angles[i], nx, ny, nz, dx, dy, dz, 
-                   detCols, detRows, du, dv,
-                   detOffsetU_mm, detOffsetV_mm,
-                   sourceDist, detectorDist, angleWeight)
-            args_list.append(args)
+        def worker(proj_idx):
+            proj = filtered[proj_idx].astype(np.float32)
+            backproject_single_projection_direct(
+                proj, angles[proj_idx], nx, ny, nz, dx, dy, dz,
+                detCols, detRows, du, dv,
+                detOffsetU_mm, detOffsetV_mm,
+                sourceDist, detectorDist, angleWeight,
+                volume_lock, volume, chunk_size=64
+            )
         
         # Parallel backprojection
-        volume = np.zeros((nz, ny, nx), dtype=np.float32)
-        
         with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-            results = list(tqdm(
-                executor.map(backproject_single_projection, args_list),
+            list(tqdm(
+                executor.map(worker, range(nProj)),
                 total=nProj,
-                desc="Backprojecting"
+                desc="Backprojecting (vectorized)"
             ))
         
-        # Accumulate all projection contributions
-        for vol_contrib in results:
-            volume += vol_contrib
-        
         # Debug output
-        logger.info(f"Volume stats - min: {volume.min():.6f}, "
-                   f"max: {volume.max():.6f}, "
-                   f"mean: {volume.mean():.6f}, "
-                   f"std: {volume.std():.6f}")
+        logger.info(f"Volume stats - min: {volume.min():.6e}, "
+                   f"max: {volume.max():.6e}, "
+                   f"mean: {volume.mean():.6e}, "
+                   f"std: {volume.std():.6e}")
         
         non_zero = np.count_nonzero(volume)
         total = volume.size
         logger.info(f"Non-zero voxels: {non_zero}/{total} ({100*non_zero/total:.2f}%)")
-        logger.info(f"Backprojection done. Volume shape {volume.shape}")
+        logger.info(f"Vectorized backprojection complete. Volume shape {volume.shape}")
         
         return volume
-
+    
 
 # ---------------------------
 # Utilities and pipeline
