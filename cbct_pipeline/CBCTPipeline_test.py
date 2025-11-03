@@ -113,35 +113,77 @@ class CBCTConfig:
         return cfg
 
     def _apply_metadata(self, meta: Dict[str, Any]):
+        """Apply metadata fields to config"""
         if "num_projections" in meta:
             self.num_projections = int(meta["num_projections"])
         if "angle_step" in meta:
             self.angle_step = float(meta["angle_step"])
-        if "voxel_size" in meta:
-            self.voxel_size = tuple(float(x) for x in meta["voxel_size"])
         if "start_angle" in meta:
             self.start_angle = float(meta["start_angle"])
+        if "scan_angle" in meta:
+            self.scan_angle = float(meta["scan_angle"])
         if "detector_pixels" in meta:
-            self.detector_pixels = tuple(int(x) for x in meta["detector_pixels"])
+            self.detector_size = tuple(int(x) for x in meta["detector_pixels"])
         if "detector_size_mm" in meta:
-            self.detector_size_mm = tuple(float(x) for x in meta["detector_size_mm"])
+            det_size = tuple(float(x) for x in meta["detector_size_mm"])
+            self.pixel_size_u = det_size[0] / self.detector_size[1]
+            self.pixel_size_v = det_size[1] / self.detector_size[0]
+        if "pixel_size_mm" in meta:
+            pixel_sizes = meta["pixel_size_mm"]
+            self.pixel_size_u = float(pixel_sizes[0])
+            self.pixel_size_v = float(pixel_sizes[1])
         if "detector_offset" in meta:
-            self.detector_offset = tuple(float(x) for x in meta["detector_offset"])
+            offsets = tuple(float(x) for x in meta["detector_offset"])
+            self.detector_offset_u = offsets[0]
+            self.detector_offset_v = offsets[1]
         if "volume_voxels" in meta:
-            self.num_voxels = tuple(int(x) for x in meta["volume_voxels"])
-        if "volume_size_mm" in meta:
-            self.volume_size_mm = tuple(float(x) for x in meta["volume_size_mm"])
+            self.volume_size = tuple(int(x) for x in meta["volume_voxels"])
+        if "voxel_size_mm" in meta:
+            vs = meta["voxel_size_mm"]
+            if isinstance(vs, (list, tuple)):
+                self.voxel_size = float(vs[0])
+            else:
+                self.voxel_size = float(vs)
         if "source_origin_dist" in meta:
-            self.source_origin_dist = float(meta["source_origin_dist"])
+            self.source_object_dist = float(meta["source_origin_dist"])
         if "source_detector_dist" in meta:
             self.source_detector_dist = float(meta["source_detector_dist"])
-        if "projection_dtype" in meta:
-            self.projection_dtype = meta["projection_dtype"]
-        if "cosine_weighting" in meta:
-            self.cosine_weighting = bool(meta["cosine_weighting"])
-        if "save_intermediate" in meta:
-            self.save_intermediate = bool(meta["save_intermediate"])
+        if "astra_downsample_factor" in meta:
+            self.astra_downsample_factor = int(meta["astra_downsample_factor"])
 
+        # Preprocessing parameters
+        if "dark_current" in meta:
+            self.dark_current = float(meta["dark_current"])
+        if "apply_log_correction" in meta:
+            self.apply_log_correction = bool(meta["apply_log_correction"])
+        if "apply_bad_pixel_correction" in meta:
+            self.apply_bad_pixel_correction = bool(meta["apply_bad_pixel_correction"])
+        if "apply_noise_reduction" in meta:
+            self.apply_noise_reduction = bool(meta["apply_noise_reduction"])
+        if "apply_truncation_correction" in meta:
+            self.apply_truncation_correction = bool(meta["apply_truncation_correction"])
+        
+        # RAW file parameters
+        if "resolution" in meta:
+            res = meta["resolution"]
+            if isinstance(res, str):
+                # Parse "3072 × 3072" format
+                parts = res.replace('×', 'x').split('x')
+                self.raw_resolution = (int(parts[0].strip()), int(parts[1].strip()))
+            else:
+                self.raw_resolution = tuple(int(x) for x in res)
+        if "bit_depth" in meta:
+            self.raw_bit_depth = str(meta["bit_depth"]).replace("_t", "")
+        if "endianness" in meta:
+            self.raw_endianness = str(meta["endianness"]).lower()
+        if "header_size" in meta:
+            hs = meta["header_size"]
+            if isinstance(hs, str):
+                self.raw_header_size = int(hs.split()[0])  # "96 bytes"
+            else:
+                self.raw_header_size = int(hs)
+        if "projection_dtype" in meta:
+            self.raw_bit_depth = str(meta["projection_dtype"])
     def derived(self) -> Dict[str, Any]:
         """Compute derived geometry variables and cache them."""
         if self._derived_cache is not None:
@@ -654,8 +696,8 @@ def run_pipeline(dataset_folder: str, metadata_filename: str = "metadata.json"):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    dataset = "data/20240530_ITRI_downsampled_4x"
-    dataset_path = "data/20240530_ITRI_downsampled_4x/slices"
+    dataset = "data/CBCT_3D_SheppLogan"
+    dataset_path = "data/CBCT_3D_SheppLogan/slices"
     ap.add_argument("--input", "-i", required=False, default=dataset, help="Folder with projection files and metadata.json")
     ap.add_argument("--metadata", "-m", default="metadata.json", help="Metadata filename inside input folder")
     args = ap.parse_args()

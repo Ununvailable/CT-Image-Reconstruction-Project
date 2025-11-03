@@ -70,8 +70,11 @@ def create_3d_shepplogan_phantom(size=512):
         phantom += intensity * ellipsoid
     
     # After all ellipsoids are added
-    phantom = phantom * 1000.0  # Scale up for better contrast
-    phantom = np.maximum(phantom, 0)  # Ensure non-negative
+    phantom = phantom - phantom.min()
+    phantom = phantom / phantom.max()  # Normalize to [0, 1]
+    phantom = phantom ** 0.5           # Gamma correction to enhance mid-tones
+    phantom = phantom * 50.0  # Scale up for better contrast
+    # phantom = np.maximum(phantom, 0)  # Ensure non-negative
     logger.info(f"Phantom range: [{phantom.min():.3f}, {phantom.max():.3f}]")
 
     return phantom
@@ -235,28 +238,28 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
         # Scaled configuration - faster, suitable for testing
         config = {
             "name": "CBCT_3D_SheppLogan_Scaled",
-            "description": "Synthetic cone-beam CT of 3D Shepp-Logan phantom (scaled)",
+            "description": "Synthetic cone-beam CT of 3D Shepp-Logan phantom (scaled, optimized geometry)",
             
-            "num_projections": 720,
-            "angle_step": 0.5,
+            "num_projections": 1440,
+            "angle_step": 0.25,
             "start_angle": 0.0,
             "scan_angle_degrees": 360.0,
             "acquisition_direction": "CCW",
             
             "detector_pixels": [768, 768],
-            "detector_size_mm": [430.0, 430.0],
-            "pixel_size_mm": [0.5599, 0.5599],
+            "detector_size_mm": [250.0, 250.0],  # Reduced from 430mm
+            "pixel_size_mm": [0.3255, 0.3255],   # 250/768
             "detector_offset": [0.0, 0.0],
             "detector_offset_u": 0.0,
             "detector_offset_v": 0.0,
             
-            "source_origin_dist": 300.0,
-            "source_detector_dist": 645.0,
-            "magnification": 2.15,
+            "source_origin_dist": 800.0,         # Increased from 300mm
+            "source_detector_dist": 1000.0,      # Increased from 645mm
+            "magnification": 1.25,                # Reduced from 2.15
             
             "volume_voxels": [256, 256, 256],
-            "volume_size_mm": [180.0, 180.0, 180.0],
-            "voxel_size_mm": [0.703125, 0.703125, 0.703125],
+            "volume_size_mm": [160.0, 160.0, 160.0],  # Fits in 200mm FOV
+            "voxel_size_mm": [0.625, 0.625, 0.625],   # 160/256
             
             "projection_dtype": "float32",
             "file_format": "tiff",
@@ -292,9 +295,9 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
             "detector_offset_u": 0.0,
             "detector_offset_v": 0.0,
             
-            "source_origin_dist": 300.0,
-            "source_detector_dist": 645.0,
-            "magnification": 2.15,
+            "source_origin_dist": 800.0,
+            "source_detector_dist": 1000.0,
+            "magnification": 1.25,
             
             "volume_voxels": [512, 512, 512],
             "volume_size_mm": [180.0, 180.0, 180.0],
@@ -345,7 +348,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate CBCT 3D Shepp-Logan dataset")
     parser.add_argument("--output", "-o", default="data/CBCT_3D_SheppLogan",
                         help="Output folder name")
-    parser.add_argument("--preset", "-p", choices=["scaled", "full"], default="scaled",
+    parser.add_argument("--preset", "-p", choices=["scaled", "full"], default="full",
                         help="Configuration preset: 'scaled' (faster) or 'full' (high-res)")
     
     args = parser.parse_args()
