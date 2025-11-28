@@ -32,12 +32,12 @@ def create_3d_shepplogan_phantom(size=512):
         [-1.0,  0.6624, 0.874, 0.880, 0.0,  -0.0184, 0.0,     0,  0,  0],
         [-0.2,  0.11,  0.31,  0.22,  0.22,  0.0,   0.0,    -18,  0, 10],
         [-0.2,  0.16,  0.41,  0.28, -0.22,  0.0,   0.0,     18,  0, 10],
-        [0.1,   0.21,  0.25,  0.41,  0.0,   0.35,  -0.15,    0,  0,  0],
-        [0.1,   0.046, 0.046, 0.05,  0.0,   0.1,   0.25,     0,  0,  0],
-        [0.1,   0.046, 0.046, 0.05,  0.0,  -0.1,   0.25,     0,  0,  0],
-        [0.1,   0.046, 0.023, 0.05, -0.08, -0.605, 0.0,      0,  0,  0],
-        [0.1,   0.023, 0.023, 0.02,  0.0,  -0.606, 0.0,      0,  0,  0],
-        [0.1,   0.023, 0.046, 0.02,  0.06, -0.605, 0.0,      0,  0,  0],
+        [0.5,   0.21,  0.25,  0.41,  0.0,   0.35,  -0.15,    0,  0,  0],
+        [0.5,   0.046, 0.046, 0.05,  0.0,   0.1,   0.25,     0,  0,  0],
+        [0.5,   0.046, 0.046, 0.05,  0.0,  -0.1,   0.25,     0,  0,  0],
+        [0.5,   0.046, 0.023, 0.05, -0.08, -0.605, 0.0,      0,  0,  0],
+        [0.5,   0.023, 0.023, 0.02,  0.0,  -0.606, 0.0,      0,  0,  0],
+        [0.5,   0.023, 0.046, 0.02,  0.06, -0.605, 0.0,      0,  0,  0],
     ]
 
     
@@ -73,7 +73,7 @@ def create_3d_shepplogan_phantom(size=512):
     phantom = phantom - phantom.min()
     phantom = phantom / phantom.max()  # Normalize to [0, 1]
     phantom = phantom ** 0.5           # Gamma correction to enhance mid-tones
-    phantom = phantom * 50.0  # Scale up for better contrast
+    phantom = phantom * 10.0  # Scale up for better contrast
     # phantom = np.maximum(phantom, 0)  # Ensure non-negative
     logger.info(f"Phantom range: [{phantom.min():.3f}, {phantom.max():.3f}]")
 
@@ -177,6 +177,8 @@ def save_projections(projections, output_folder, file_format="tiff"):
     Save projections to disk
     Expects projections in shape (angles, rows, cols) from ASTRA
     Saves one file per angle, each file is (rows, cols) = detector (Height, Width)
+    
+    Supports formats: tiff, png, raw
     """
     slices_folder = os.path.join(output_folder, "slices")
     os.makedirs(slices_folder, exist_ok=True)
@@ -186,11 +188,44 @@ def save_projections(projections, output_folder, file_format="tiff"):
     logger.info(f"Saving {num_projections} projections as {file_format.upper()}...")
     logger.info(f"Each projection size: {projections.shape[1]} × {projections.shape[2]} (H×W)")
     
-    for i in tqdm(range(num_projections), desc="Saving projections"):
-        proj = projections[i, :, :]  # Extract single projection (rows, cols)
+    if file_format.lower() == "raw":
+        # RAW format: int16, little-endian, no header
+        proj_min = projections.min()
+        proj_max = projections.max()
         
-        if file_format.lower() == "tiff":
-            # Save as 32-bit float TIFF
+        logger.info(f"Original range: [{proj_min:.6f}, {proj_max:.6f}]")
+        logger.info(f"Mapping to int16 range: [-32768, 32767]")
+        
+        for i in tqdm(range(num_projections), desc="Saving projections"):
+            proj = projections[i, :, :]
+            
+            # Normalize to int16 range
+            proj_normalized = (proj - proj_min) / (proj_max - proj_min)
+            proj_int16 = (proj_normalized * 65535 - 32768).astype(np.int16)
+            
+            # Save as RAW binary (little-endian by default)
+            filename = os.path.join(slices_folder, f"projection_{i:04d}.raw")
+            proj_int16.tofile(filename)
+        
+        # Save format info
+        info_file = os.path.join(slices_folder, "raw_format.txt")
+        with open(info_file, "w") as f:
+            f.write(f"Format: RAW int16 (signed), little-endian, no header\n")
+            f.write(f"Dimensions per file: {projections.shape[1]} rows × {projections.shape[2]} cols\n")
+            f.write(f"Number of files: {num_projections}\n")
+            f.write(f"Data range: [-32768, 32767]\n")
+            f.write(f"Original data range: [{proj_min:.6f}, {proj_max:.6f}]\n")
+            f.write(f"\nTo read in Python:\n")
+            f.write(f"  data = np.fromfile('projection_0000.raw', dtype=np.int16)\n")
+            f.write(f"  data = data.reshape({projections.shape[1]}, {projections.shape[2]})\n")
+        
+        logger.info(f"Format info saved to {info_file}")
+    
+    elif file_format.lower() == "tiff":
+        # TIFF format
+        for i in tqdm(range(num_projections), desc="Saving projections"):
+            proj = projections[i, :, :]
+            
             try:
                 import tifffile
                 filename = os.path.join(slices_folder, f"projection_{i:04d}.tiff")
@@ -201,18 +236,23 @@ def save_projections(projections, output_folder, file_format="tiff"):
                 img = Image.fromarray(proj_norm)
                 filename = os.path.join(slices_folder, f"projection_{i:04d}.tiff")
                 img.save(filename)
-        
-        elif file_format.lower() == "png":
+    
+    elif file_format.lower() == "png":
+        # PNG format
+        for i in tqdm(range(num_projections), desc="Saving projections"):
+            proj = projections[i, :, :]
+            
             # Normalize to uint16 for PNG
             proj_norm = ((proj - proj.min()) / (proj.max() - proj.min()) * 65535).astype(np.uint16)
             img = Image.fromarray(proj_norm)
             filename = os.path.join(slices_folder, f"projection_{i:04d}.png")
             img.save(filename)
-        
-        else:
-            raise ValueError(f"Unsupported format: {file_format}")
+    
+    else:
+        raise ValueError(f"Unsupported format: {file_format}")
     
     logger.info(f"Projections saved to {slices_folder}")
+
 
 
 def save_metadata(config, output_folder):
@@ -220,6 +260,17 @@ def save_metadata(config, output_folder):
     Save metadata.json for reconstruction pipeline
     """
     metadata_path = os.path.join(output_folder, "slices", "metadata.json")
+
+    if config.get("file_format", "").lower() == "raw":
+        config["raw_bit_depth"] = "int16"
+        config["raw_endianness"] = "little"
+        config["raw_header_size"] = 0
+        config["raw_resolution"] = config["detector_pixels"]
+    
+    with open(metadata_path, "w") as f:
+        json.dump(config, f, indent=2)
+    
+    logger.info(f"Metadata saved to {metadata_path}")
     
     with open(metadata_path, "w") as f:
         json.dump(config, f, indent=2)
@@ -253,7 +304,7 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
             "detector_offset_u": 0.0,
             "detector_offset_v": 0.0,
             
-            "source_origin_dist": 800.0,         # Increased from 300mm
+            "source_origin_dist": 900.0,         # Increased from 300mm
             "source_detector_dist": 1000.0,      # Increased from 645mm
             "magnification": 1.25,                # Reduced from 2.15
             
@@ -262,7 +313,7 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
             "voxel_size_mm": [0.625, 0.625, 0.625],   # 160/256
             
             "projection_dtype": "float32",
-            "file_format": "tiff",
+            "file_format": "raw",
             
             "astra_downsample_factor": 1,
             
@@ -294,8 +345,8 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
             "detector_offset": [0.0, 0.0],
             "detector_offset_u": 0.0,
             "detector_offset_v": 0.0,
-            
-            "source_origin_dist": 800.0,
+        
+            "source_origin_dist": 900.0,
             "source_detector_dist": 1000.0,
             "magnification": 1.25,
             
@@ -304,7 +355,7 @@ def create_dataset(output_folder="CBCT_3D_SheppLogan", config_preset="scaled"):
             "voxel_size_mm": [0.3515625, 0.3515625, 0.3515625],
             
             "projection_dtype": "float32",
-            "file_format": "tiff",
+            "file_format": "raw",
             
             "astra_downsample_factor": 2,
             

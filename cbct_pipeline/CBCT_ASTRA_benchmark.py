@@ -2,7 +2,7 @@
 """
 CBCT Reconstruction using ASTRA Toolbox with RAW file support
 Handles multiple file formats: RAW, TIFF, PNG, JPG
-Output matches custom kernel structure
+Supports anisotropic voxels and flexible geometry configuration
 """
 
 import numpy as np
@@ -14,8 +14,8 @@ from PIL import Image
 from tqdm import tqdm
 import traceback
 import sys
-from dataclasses import dataclass
-from typing import Tuple, Dict, Any, Optional, List
+from dataclasses import dataclass, field
+from typing import Tuple, Dict, Any, Optional, List, Union
 import astra
 import pickle
 import glob
@@ -26,71 +26,79 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ASTRACBCTConfig:
-    # Dataset parameters
-    num_projections: int = 1600
-    scan_angle: float = 360.0
-    start_angle: float = 270.0
-    angle_step: float = 1
-    detector_size: Tuple[int, int] = (715, 715)  # (rows, cols)
-    pixel_size_u: float = 0.6  # mm
-    pixel_size_v: float = 0.6  # mm
-    voxel_size: float = 0.006134010138512811  # mm
-    source_object_dist: float = 28.625365287711134  # mm
-    source_detector_dist: float = 699.9996522369905  # mm
-    detector_offset_u: float = 357.5 / 0.01713  # pixels
-    detector_offset_v: float = 357.4 / 0.01713  # pixels
+    """Configuration for ASTRA CBCT reconstruction pipeline"""
+    
+    # Acquisition geometry
+    acquisition_num_projections: int = 360
+    acquisition_scan_range_deg: float = 360.0
+    acquisition_start_angle_deg: float = 0.0
+    acquisition_angle_step_deg: float = 1.0
+    acquisition_rotation_direction: str = "CCW"
+    
+    # Source-detector geometry
+    source_to_origin_dist_mm: float = 110.0
+    source_to_detector_dist_mm: float = 757.0
+    source_magnification: float = 6.88
+    
+    # Detector parameters
+    detector_rows_px: int = 768
+    detector_cols_px: int = 768
+    detector_pixel_pitch_u_mm: float = 0.56
+    detector_pixel_pitch_v_mm: float = 0.56
+    detector_physical_size_u_mm: float = 430.0
+    detector_physical_size_v_mm: float = 430.0
+    
+    # Volume parameters
+    volume_nx_vox: int = 256
+    volume_ny_vox: int = 256
+    volume_nz_vox: int = 256
+    volume_size_x_mm: float = 180.0
+    volume_size_y_mm: float = 180.0
+    volume_size_z_mm: float = 180.0
+    volume_voxel_pitch_mm: float = 0.703125
+    
+    # Preprocessing parameters
+    preprocessing_downsample_factor: int = 1
+    preprocessing_apply_log: bool = False
+    preprocessing_apply_bad_pixel_correction: bool = False
+    preprocessing_apply_gaussian_filter: bool = False
+    preprocessing_gaussian_sigma_px: float = 1.5
+    preprocessing_dark_current: float = 0.0
+    preprocessing_bad_pixel_threshold: int = 32768
     
     # RAW file parameters
-    raw_resolution: Tuple[int, int] = (3072, 3072)  # (height, width)
-    raw_bit_depth: str = "uint16"
-    raw_endianness: str = "little"
-    raw_header_size: int = 0  # bytes
+    raw_rows_px: int = 1536
+    raw_cols_px: int = 1536
+    raw_dtype: str = "uint16"
+    raw_endian: str = "little"
+    raw_header_bytes: int = 0
     
-    # Processing parameters
-    dark_current: float = 100.0
-    bad_pixel_threshold: int = 32768
-    apply_log_correction: bool = True
-    apply_bad_pixel_correction: bool = True
-    apply_noise_reduction: bool = True
-    apply_truncation_correction: bool = True
-    truncation_width: int = 125
+    # Calibration parameters
+    calibration_offset_u_px: float = 0.0
+    calibration_offset_v_px: float = 0.0
+    calibration_offset_reference: str = "fullres"
+    calibration_tilt_deg: float = 0.0
+    calibration_skew_deg: float = 0.0
+    calibration_sod_correction_mm: float = 0.0
+    calibration_angular_offset_deg: float = 0.0
     
     # Reconstruction parameters
-    volume_size: Tuple[int, int, int] = (512, 512, 512)
-    algorithm: str = "FDK_CUDA"
-    iterations: int = 50
+    reconstruction_algorithm: str = "FDK_CUDA"
+    reconstruction_iterations: int = 50
     
-    # Memory management
-    projection_batch_size: int = 50
-    astra_downsample_factor: int = 4  # Placeholder
-    
-    # IO paths
+    # I/O parameters
     input_path: str = "slices/"
     output_path: str = "results_astra/"
+    file_format: str = "tiff"
     
     @classmethod
-    # def create_with_metadata(cls, folder: str, metadata_filename: str = "metadata.json"):
-    #     """Create config from metadata.json file"""
-    #     cfg = cls()
-    #     cfg.input_path = f"{folder}/slices"
-    #     cfg.output_path = f"{folder}/results_astra"
-        
-    #     meta_path = f"{cfg.input_path}/{metadata_filename}"
-    #     if os.path.exists(meta_path):
-    #         with open(meta_path, "r") as f:
-    #             meta = json.load(f)
-    #         cfg._apply_metadata(meta)
-    #         logger.info(f"Loaded metadata from {meta_path}")
-    #     else:
-    #         logger.warning(f"No metadata file at {meta_path}, using defaults")
-    #     return cfg
     def create_with_metadata(cls, folder: str, metadata_filename: str = "metadata.json"):
-        """Create config from metadata.json file"""
+        """Create configuration from metadata.json file"""
         cfg = cls()
-        cfg.input_path = f"{folder}/slices"
-        cfg.output_path = f"{folder}/results_astra"
+        cfg.input_path = os.path.join(folder, "slices")
+        cfg.output_path = os.path.join(folder, "results_astra")
         
-        meta_path = f"{cfg.input_path}/{metadata_filename}"
+        meta_path = os.path.join(cfg.input_path, metadata_filename)
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
@@ -98,97 +106,172 @@ class ASTRACBCTConfig:
             logger.info(f"Loaded metadata from {meta_path}")
         else:
             logger.warning(f"No metadata file at {meta_path}, using defaults")
+        
         return cfg
     
     def _apply_metadata(self, meta: Dict[str, Any]):
-        """Apply metadata fields to config"""
-        if "num_projections" in meta:
-            self.num_projections = int(meta["num_projections"])
-        if "angle_step" in meta:
-            self.angle_step = float(meta["angle_step"])
-        if "start_angle" in meta:
-            self.start_angle = float(meta["start_angle"])
-        if "scan_angle" in meta:
-            self.scan_angle = float(meta["scan_angle"])
-        if "detector_pixels" in meta:
-            self.detector_size = tuple(int(x) for x in meta["detector_pixels"])
-        if "detector_size_mm" in meta:
-            det_size = tuple(float(x) for x in meta["detector_size_mm"])
-            self.pixel_size_u = det_size[0] / self.detector_size[1]
-            self.pixel_size_v = det_size[1] / self.detector_size[0]
-        if "pixel_size_mm" in meta:
-            pixel_sizes = meta["pixel_size_mm"]
-            self.pixel_size_u = float(pixel_sizes[0])
-            self.pixel_size_v = float(pixel_sizes[1])
-        if "detector_offset" in meta:
-            offsets = tuple(float(x) for x in meta["detector_offset"])
-            self.detector_offset_u = offsets[0]
-            self.detector_offset_v = offsets[1]
-        if "volume_voxels" in meta:
-            self.volume_size = tuple(int(x) for x in meta["volume_voxels"])
-        if "voxel_size_mm" in meta:
-            vs = meta["voxel_size_mm"]
-            if isinstance(vs, (list, tuple)):
-                self.voxel_size = float(vs[0])
-            else:
-                self.voxel_size = float(vs)
-        if "source_origin_dist" in meta:
-            self.source_object_dist = float(meta["source_origin_dist"])
-        if "source_detector_dist" in meta:
-            self.source_detector_dist = float(meta["source_detector_dist"])
-        if "astra_downsample_factor" in meta:
-            self.astra_downsample_factor = int(meta["astra_downsample_factor"])
-
+        """Apply metadata fields to configuration"""
+        
+        # Acquisition parameters
+        if "acquisition_num_projections" in meta:
+            self.acquisition_num_projections = int(meta["acquisition_num_projections"])
+        if "acquisition_angle_step_deg" in meta:
+            self.acquisition_angle_step_deg = float(meta["acquisition_angle_step_deg"])
+        if "acquisition_start_angle_deg" in meta:
+            self.acquisition_start_angle_deg = float(meta["acquisition_start_angle_deg"])
+        if "acquisition_scan_range_deg" in meta:
+            self.acquisition_scan_range_deg = float(meta["acquisition_scan_range_deg"])
+        if "acquisition_rotation_direction" in meta:
+            self.acquisition_rotation_direction = str(meta["acquisition_rotation_direction"])
+        
+        # Source-detector geometry
+        if "source_to_origin_dist_mm" in meta:
+            self.source_to_origin_dist_mm = float(meta["source_to_origin_dist_mm"])
+        if "source_to_detector_dist_mm" in meta:
+            self.source_to_detector_dist_mm = float(meta["source_to_detector_dist_mm"])
+        if "source_magnification" in meta:
+            self.source_magnification = float(meta["source_magnification"])
+        
+        # Detector parameters
+        if "detector_rows_px" in meta:
+            self.detector_rows_px = int(meta["detector_rows_px"])
+        if "detector_cols_px" in meta:
+            self.detector_cols_px = int(meta["detector_cols_px"])
+        if "detector_pixel_pitch_u_mm" in meta:
+            self.detector_pixel_pitch_u_mm = float(meta["detector_pixel_pitch_u_mm"])
+        if "detector_pixel_pitch_v_mm" in meta:
+            self.detector_pixel_pitch_v_mm = float(meta["detector_pixel_pitch_v_mm"])
+        if "detector_physical_size_u_mm" in meta:
+            self.detector_physical_size_u_mm = float(meta["detector_physical_size_u_mm"])
+        if "detector_physical_size_v_mm" in meta:
+            self.detector_physical_size_v_mm = float(meta["detector_physical_size_v_mm"])
+        
+        # Volume parameters
+        if "volume_nx_vox" in meta:
+            self.volume_nx_vox = int(meta["volume_nx_vox"])
+        if "volume_ny_vox" in meta:
+            self.volume_ny_vox = int(meta["volume_ny_vox"])
+        if "volume_nz_vox" in meta:
+            self.volume_nz_vox = int(meta["volume_nz_vox"])
+        if "volume_size_x_mm" in meta:
+            self.volume_size_x_mm = float(meta["volume_size_x_mm"])
+        if "volume_size_y_mm" in meta:
+            self.volume_size_y_mm = float(meta["volume_size_y_mm"])
+        if "volume_size_z_mm" in meta:
+            self.volume_size_z_mm = float(meta["volume_size_z_mm"])
+        if "volume_voxel_pitch_mm" in meta:
+            self.volume_voxel_pitch_mm = float(meta["volume_voxel_pitch_mm"])
+        
         # Preprocessing parameters
-        if "dark_current" in meta:
-            self.dark_current = float(meta["dark_current"])
-        if "apply_log_correction" in meta:
-            self.apply_log_correction = bool(meta["apply_log_correction"])
-        if "apply_bad_pixel_correction" in meta:
-            self.apply_bad_pixel_correction = bool(meta["apply_bad_pixel_correction"])
-        if "apply_noise_reduction" in meta:
-            self.apply_noise_reduction = bool(meta["apply_noise_reduction"])
-        if "apply_truncation_correction" in meta:
-            self.apply_truncation_correction = bool(meta["apply_truncation_correction"])
+        if "preprocessing_downsample_factor" in meta:
+            self.preprocessing_downsample_factor = int(meta["preprocessing_downsample_factor"])
+        if "preprocessing_apply_log" in meta:
+            self.preprocessing_apply_log = bool(meta["preprocessing_apply_log"])
+        if "preprocessing_apply_bad_pixel_correction" in meta:
+            self.preprocessing_apply_bad_pixel_correction = bool(meta["preprocessing_apply_bad_pixel_correction"])
+        if "preprocessing_apply_gaussian_filter" in meta:
+            self.preprocessing_apply_gaussian_filter = bool(meta["preprocessing_apply_gaussian_filter"])
+        if "preprocessing_gaussian_sigma_px" in meta:
+            self.preprocessing_gaussian_sigma_px = float(meta["preprocessing_gaussian_sigma_px"])
+        if "preprocessing_dark_current" in meta:
+            self.preprocessing_dark_current = float(meta["preprocessing_dark_current"])
         
         # RAW file parameters
-        if "resolution" in meta:
-            res = meta["resolution"]
-            if isinstance(res, str):
-                # Parse "3072 × 3072" format
-                parts = res.replace('×', 'x').split('x')
-                self.raw_resolution = (int(parts[0].strip()), int(parts[1].strip()))
-            else:
-                self.raw_resolution = tuple(int(x) for x in res)
-        if "bit_depth" in meta:
-            self.raw_bit_depth = str(meta["bit_depth"]).replace("_t", "")
-        if "endianness" in meta:
-            self.raw_endianness = str(meta["endianness"]).lower()
-        if "header_size" in meta:
-            hs = meta["header_size"]
-            if isinstance(hs, str):
-                self.raw_header_size = int(hs.split()[0])  # "96 bytes"
-            else:
-                self.raw_header_size = int(hs)
-        if "projection_dtype" in meta:
-            self.raw_bit_depth = str(meta["projection_dtype"])
+        if "raw_rows_px" in meta:
+            self.raw_rows_px = int(meta["raw_rows_px"])
+        if "raw_cols_px" in meta:
+            self.raw_cols_px = int(meta["raw_cols_px"])
+        if "raw_dtype" in meta:
+            self.raw_dtype = str(meta["raw_dtype"])
+        if "raw_endian" in meta:
+            self.raw_endian = str(meta["raw_endian"]).lower()
+        if "raw_header_bytes" in meta:
+            self.raw_header_bytes = int(meta["raw_header_bytes"])
+        
+        # Calibration parameters
+        if "calibration_offset_u_px" in meta:
+            self.calibration_offset_u_px = float(meta["calibration_offset_u_px"])
+        if "calibration_offset_v_px" in meta:
+            self.calibration_offset_v_px = float(meta["calibration_offset_v_px"])
+        if "calibration_offset_reference" in meta:
+            self.calibration_offset_reference = str(meta["calibration_offset_reference"])
+        if "calibration_tilt_deg" in meta:
+            self.calibration_tilt_deg = float(meta["calibration_tilt_deg"])
+        if "calibration_skew_deg" in meta:
+            self.calibration_skew_deg = float(meta["calibration_skew_deg"])
+        if "calibration_sod_correction_mm" in meta:
+            self.calibration_sod_correction_mm = float(meta["calibration_sod_correction_mm"])
+        if "calibration_angular_offset_deg" in meta:
+            self.calibration_angular_offset_deg = float(meta["calibration_angular_offset_deg"])
+        
+        # Reconstruction parameters
+        if "reconstruction_algorithm" in meta:
+            self.reconstruction_algorithm = str(meta["reconstruction_algorithm"])
+        if "reconstruction_iterations" in meta:
+            self.reconstruction_iterations = int(meta["reconstruction_iterations"])
+        
+        # File format
+        if "file_format" in meta:
+            self.file_format = str(meta["file_format"])
+        
+        # Log loaded configuration
+        logger.info(f"Loaded: {self.acquisition_num_projections} projections, "
+                   f"detector {self.detector_rows_px}×{self.detector_cols_px}, "
+                   f"SOD={self.source_to_origin_dist_mm}mm, SDD={self.source_to_detector_dist_mm}mm")
+        logger.info(f"Calibration: offset_u={self.calibration_offset_u_px}px, "
+                   f"offset_v={self.calibration_offset_v_px}px, "
+                   f"tilt={self.calibration_tilt_deg}deg")
+    
+    def get_voxel_sizes(self) -> Tuple[float, float, float]:
+        """Get voxel sizes as tuple (X, Y, Z)"""
+        return (self.volume_voxel_pitch_mm, self.volume_voxel_pitch_mm, self.volume_voxel_pitch_mm)
+    
+    def get_volume_size(self) -> Tuple[int, int, int]:
+        """Get volume dimensions as tuple (X, Y, Z)"""
+        return (self.volume_nx_vox, self.volume_ny_vox, self.volume_nz_vox)
+    
+    def get_detector_size(self) -> Tuple[int, int]:
+        """Get detector dimensions as tuple (rows, cols)"""
+        return (self.detector_rows_px, self.detector_cols_px)
+    
+    def get_raw_resolution(self) -> Tuple[int, int]:
+        """Get RAW file resolution as tuple (rows, cols)"""
+        return (self.raw_rows_px, self.raw_cols_px)
+    
+    def get_calibration_offset_px(self) -> Tuple[float, float]:
+        """
+        Get calibration offset in pixels at current working resolution.
+        Converts from fullres if necessary.
+        """
+        offset_u = self.calibration_offset_u_px
+        offset_v = self.calibration_offset_v_px
+        
+        if self.calibration_offset_reference != "fullres":
+            ds = self.preprocessing_downsample_factor
+            offset_u = offset_u / ds
+            offset_v = offset_v / ds
+        
+        return (offset_u, offset_v)
 
 
 def discover_projection_files(folder: str, file_format: str = None, allowed_exts=None) -> List[str]:
-    """Find projection files, optionally filtered by format"""
+    """Find projection files in folder"""
     if file_format and file_format.lower() == "raw":
         pattern = os.path.join(folder, "*.raw")
         files = sorted(glob.glob(pattern))
     elif allowed_exts:
         pattern = os.path.join(folder, "*")
-        files = [f for f in sorted(glob.glob(pattern)) if os.path.splitext(f)[1].lower() in allowed_exts]
+        files = [f for f in sorted(glob.glob(pattern)) 
+                if os.path.splitext(f)[1].lower() in allowed_exts]
     else:
         default_exts = (".tiff", ".tif", ".jpg", ".jpeg", ".png", ".raw")
         pattern = os.path.join(folder, "*")
-        files = [f for f in sorted(glob.glob(pattern)) if os.path.splitext(f)[1].lower() in default_exts]
+        files = [f for f in sorted(glob.glob(pattern)) 
+                if os.path.splitext(f)[1].lower() in default_exts]
     
     if len(files) == 0:
         logger.warning(f"No projection files found in {folder}")
+    
     return files
 
 
@@ -210,33 +293,32 @@ class CBCTDataLoader:
             return np.array(Image.open(path), dtype=np.float32)
     
     def _load_image(self, path: str) -> np.ndarray:
-        """Load image file (PNG, JPG)"""
+        """Load PNG/JPG image file"""
         with Image.open(path) as img:
             return np.array(img.convert("F"), dtype=np.float32)
     
-    def _load_raw(self, path: str, header_bytes: int = 0, endianness: str = "native") -> np.ndarray:
-        """Load RAW file with optional header skip and endianness control"""
-        base_dtype = np.dtype(self.config.raw_bit_depth)
+    def _load_raw(self, path: str) -> np.ndarray:
+        """Load RAW binary file with optional header skip and endianness control"""
+        base_dtype = np.dtype(self.config.raw_dtype)
         
-        if endianness == "little":
+        if self.config.raw_endian == "little":
             dtype = base_dtype.newbyteorder('<')
-        elif endianness == "big":
+        elif self.config.raw_endian == "big":
             dtype = base_dtype.newbyteorder('>')
         else:
             dtype = base_dtype
         
-        height, width = self.config.raw_resolution
+        height, width = self.config.get_raw_resolution()
+        header_bytes = self.config.raw_header_bytes
+        
         expected_data_size = height * width * dtype.itemsize
         expected_total_size = header_bytes + expected_data_size
         actual_size = os.path.getsize(path)
         
-        # logger.info(f"RAW file {os.path.basename(path)}: size={actual_size}, expected={expected_total_size}, header={header_bytes}")
-        
         if actual_size < expected_total_size:
-            logger.warning(f"File too small; recalculating header size")
+            logger.warning(f"File {os.path.basename(path)} smaller than expected, recalculating header")
             header_bytes = actual_size - expected_data_size
             if header_bytes < 0:
-                logger.error(f"Cannot determine valid header size")
                 raise ValueError(f"File size {actual_size} incompatible with resolution {height}×{width}")
             logger.info(f"Adjusted header to {header_bytes} bytes")
         
@@ -248,7 +330,7 @@ class CBCTDataLoader:
         try:
             data = data.reshape((height, width))
         except ValueError:
-            logger.warning(f"Reshape ({height}, {width}) failed with {len(data)} elements; trying transpose")
+            logger.warning(f"Reshape failed, trying transpose")
             data = data.reshape((width, height)).T
         
         return data.astype(np.float32)
@@ -258,53 +340,48 @@ class CBCTDataLoader:
         if folder is None:
             folder = self.config.input_path
         
-        file_format = getattr(self.config, 'file_format', None)
-        files = discover_projection_files(folder, file_format=file_format)
+        files = discover_projection_files(folder, file_format=self.config.file_format)
         
         if len(files) == 0:
             raise RuntimeError(f"No projection files found in {folder}")
         
-        if len(files) < self.config.num_projections:
-            logger.warning(f"Found {len(files)} files but config expects {self.config.num_projections}")
-        files = files[:self.config.num_projections]
+        num_proj = self.config.acquisition_num_projections
+        if len(files) < num_proj:
+            logger.warning(f"Found {len(files)} files but config expects {num_proj}")
         
-        header_bytes = self.config.raw_header_size
-        endianness = self.config.raw_endianness
+        files = files[:num_proj]
         
         projections = []
-        ds = self.config.astra_downsample_factor
+        ds = self.config.preprocessing_downsample_factor
+        
         for path in tqdm(files, desc="Loading projections"):
             try:
                 ext = os.path.splitext(path)[1].lower()
+                
                 if ext in (".tif", ".tiff"):
                     proj = self._load_tiff(path)
                 elif ext in (".png", ".jpg", ".jpeg"):
                     proj = self._load_image(path)
                 elif ext == ".raw":
-                    proj = self._load_raw(path, header_bytes=header_bytes, endianness=endianness)
+                    proj = self._load_raw(path)
                 else:
                     raise RuntimeError(f"Unsupported file format: {ext}")
-                proj = proj[::ds, ::ds]  # Downsample
+                
+                # Downsample if needed
+                if ds > 1:
+                    proj = proj[::ds, ::ds]
+                
                 projections.append(proj)
+                
             except Exception as e:
                 logger.error(f"Failed to load {path}: {e}")
                 raise
         
         stack = np.stack(projections, axis=0).astype(np.float32)
         logger.info(f"Loaded projection stack shape: {stack.shape}")
+        logger.info(f"Projection value range: [{stack.min():.3f}, {stack.max():.3f}]")
+        
         return stack
-    
-    def _load_projection(self, path: str, ext: str) -> np.ndarray:
-        """Load single projection based on extension"""
-        if ext in (".tif", ".tiff"):
-            return self._load_tiff(path)
-        elif ext in (".png", ".jpg", ".jpeg"):
-            return self._load_image(path)
-        elif ext == ".raw":
-            return self._load_raw(path, header_bytes=self.config.raw_header_size, 
-                                 endianness=self.config.raw_endianness)
-        else:
-            raise RuntimeError(f"Unsupported file format: {ext}")
 
 
 class CBCTPreprocessor:
@@ -319,28 +396,28 @@ class CBCTPreprocessor:
         processed = projections.copy()
         
         # Dark current subtraction
-        processed = processed - self.config.dark_current
-        processed = np.maximum(processed, 1.0)
+        if self.config.preprocessing_dark_current != 0:
+            processed = processed - self.config.preprocessing_dark_current
+            processed = np.maximum(processed, 1.0)
         
-        if self.config.apply_log_correction:
+        if self.config.preprocessing_apply_log:
             processed = self._log_correction(processed)
         
-        if self.config.apply_bad_pixel_correction:
+        if self.config.preprocessing_apply_bad_pixel_correction:
             processed = self._bad_pixel_correction(processed)
         
-        if self.config.apply_noise_reduction:
+        if self.config.preprocessing_apply_gaussian_filter:
             processed = self._noise_reduction(processed)
-
-        if self.config.apply_truncation_correction:
-            processed = self._truncation_correction(processed)
         
+        logger.info(f"Preprocessed value range: [{processed.min():.3f}, {processed.max():.3f}]")
         logger.info("Preprocessing complete")
+        
         return processed
     
     def _log_correction(self, projections: np.ndarray) -> np.ndarray:
         """Apply Beer-Lambert logarithmic correction"""
         I0 = np.max(projections, axis=(1, 2), keepdims=True)
-        return -np.log(projections / I0)
+        return -np.log(np.maximum(projections / I0, 1e-10))
     
     def _bad_pixel_correction(self, projections: np.ndarray) -> np.ndarray:
         """Correct bad pixels using median filter"""
@@ -348,7 +425,7 @@ class CBCTPreprocessor:
             from scipy.ndimage import median_filter
             corrected = projections.copy()
             for i in range(projections.shape[0]):
-                bad_mask = projections[i] > self.config.bad_pixel_threshold
+                bad_mask = projections[i] > self.config.preprocessing_bad_pixel_threshold
                 if np.any(bad_mask):
                     filtered = median_filter(projections[i], size=3)
                     corrected[i] = np.where(bad_mask, filtered, projections[i])
@@ -361,130 +438,158 @@ class CBCTPreprocessor:
         """Apply Gaussian noise reduction"""
         try:
             from scipy.ndimage import gaussian_filter
+            sigma = self.config.preprocessing_gaussian_sigma_px
             filtered = np.zeros_like(projections)
             for i in range(projections.shape[0]):
-                filtered[i] = gaussian_filter(projections[i], sigma=1.5)
+                filtered[i] = gaussian_filter(projections[i], sigma=sigma)
             return filtered
         except ImportError:
             logger.warning("scipy not available; skipping noise reduction")
             return projections
-    
-    def _truncation_correction(self, projections: np.ndarray) -> np.ndarray:
-        """Correct truncation artifacts"""
-        corrected = projections.copy()
-        width = self.config.truncation_width
-        
-        if width > 0 and width < projections.shape[2]:
-            for i in range(projections.shape[0]):
-                left_edge = np.mean(corrected[i, :, :10], axis=1, keepdims=True)
-                corrected[i, :, :width] = left_edge
-                right_edge = np.mean(corrected[i, :, -10:], axis=1, keepdims=True)
-                corrected[i, :, -width:] = right_edge
-        
-        return corrected
 
 
 class ASTRAReconstructor:
-    """CBCT reconstruction using ASTRA toolbox"""
+    """CBCT reconstruction using ASTRA Toolbox"""
     
     def __init__(self, config: ASTRACBCTConfig):
         self.config = config
         self._check_astra()
     
     def _check_astra(self):
-        """Check ASTRA installation"""
-        logger.info(f"ASTRA version: {astra.__version__}")
+        """Check ASTRA installation and CUDA availability"""
+        logger.info(f"ASTRA Toolbox version: {astra.__version__}")
+        
         if astra.astra.use_cuda():
-            logger.info("CUDA acceleration available")
+            logger.info("CUDA acceleration: AVAILABLE")
         else:
-            logger.warning("CUDA not available, using CPU")
-            if self.config.algorithm.endswith("_CUDA"):
-                self.config.algorithm = self.config.algorithm.replace("_CUDA", "")
+            logger.warning("CUDA acceleration: NOT AVAILABLE (using CPU)")
+            if self.config.reconstruction_algorithm.endswith("_CUDA"):
+                self.config.reconstruction_algorithm = self.config.reconstruction_algorithm.replace("_CUDA", "")
+                logger.info(f"Switched algorithm to {self.config.reconstruction_algorithm}")
     
     def create_geometry(self, projections: np.ndarray) -> Tuple[Dict, Dict]:
-        """Create ASTRA geometries"""
+        """Create ASTRA projection and volume geometries using cone_vec"""
         num_angles, det_rows, det_cols = projections.shape
         
+        # Generate angles with calibration offset
+        start_angle = self.config.acquisition_start_angle_deg + self.config.calibration_angular_offset_deg
+        scan_range = self.config.acquisition_scan_range_deg
+        
         angles = np.linspace(
-            np.radians(self.config.start_angle),
-            np.radians(self.config.start_angle + self.config.scan_angle),
+            np.radians(start_angle),
+            np.radians(start_angle + scan_range),
             num_angles,
             endpoint=False
         )
         
-        # Adjust for downsampling
-        ds = self.config.astra_downsample_factor
-        pixel_size_u = self.config.pixel_size_u * ds
-        pixel_size_v = self.config.pixel_size_v * ds
-        detector_offset_u = self.config.detector_offset_u / ds
-        detector_offset_v = self.config.detector_offset_v / ds
+        # Handle rotation direction
+        if self.config.acquisition_rotation_direction.upper() == "CW":
+            angles = -angles
         
-        proj_geom = astra.create_proj_geom(
-            'cone',
-            pixel_size_v, pixel_size_u,
-            det_rows, det_cols,
-            angles,
-            self.config.source_object_dist,
-            self.config.source_detector_dist - self.config.source_object_dist,
-            detector_offset_u - det_cols/2,
-            detector_offset_v - det_rows/2
-            # detector_offset_u,
-            # detector_offset_v  
-        )
+        # Pixel sizes at working resolution (after downsampling)
+        ds = self.config.preprocessing_downsample_factor
+        pixel_pitch_u = self.config.detector_pixel_pitch_u_mm * ds
+        pixel_pitch_v = self.config.detector_pixel_pitch_v_mm * ds
         
-        vol_x, vol_y, vol_z = self.config.volume_size
+        # Get calibration offsets in working resolution pixels, then convert to mm
+        offset_u_px, offset_v_px = self.config.get_calibration_offset_px()
+        offset_u_mm = offset_u_px * pixel_pitch_u
+        offset_v_mm = offset_v_px * pixel_pitch_v
+        
+        # Source-object and object-detector distances with SOD correction
+        SOD = self.config.source_to_origin_dist_mm + self.config.calibration_sod_correction_mm
+        ODD = self.config.source_to_detector_dist_mm - SOD
+        
+        # Detector tilt and skew
+        tilt_rad = np.radians(self.config.calibration_tilt_deg)
+        skew_rad = np.radians(self.config.calibration_skew_deg)
+        
+        # Build vectors for each angle
+        vectors = np.zeros((num_angles, 12))
+        for i, ang in enumerate(angles):
+            # Source position
+            vectors[i, 0] = np.sin(ang) * SOD
+            vectors[i, 1] = -np.cos(ang) * SOD
+            vectors[i, 2] = 0
+            
+            # Detector center position (with offset)
+            vectors[i, 3] = -np.sin(ang) * ODD + np.cos(ang) * offset_u_mm
+            vectors[i, 4] = np.cos(ang) * ODD + np.sin(ang) * offset_u_mm
+            vectors[i, 5] = offset_v_mm
+            
+            # Detector u-axis (horizontal) with tilt
+            vectors[i, 6] = np.cos(ang) * np.cos(tilt_rad) * pixel_pitch_u
+            vectors[i, 7] = np.sin(ang) * np.cos(tilt_rad) * pixel_pitch_u
+            vectors[i, 8] = np.sin(tilt_rad) * pixel_pitch_u
+            
+            # Detector v-axis (vertical) with tilt and skew
+            vectors[i, 9] = -np.sin(tilt_rad) * np.cos(ang) * pixel_pitch_v + np.sin(skew_rad) * np.cos(ang) * pixel_pitch_v
+            vectors[i, 10] = -np.sin(tilt_rad) * np.sin(ang) * pixel_pitch_v + np.sin(skew_rad) * np.sin(ang) * pixel_pitch_v
+            vectors[i, 11] = np.cos(tilt_rad) * pixel_pitch_v
+        
+        proj_geom = astra.create_proj_geom('cone_vec', det_rows, det_cols, vectors)
+        
+        # Volume geometry
+        vol_x, vol_y, vol_z = self.config.get_volume_size()
+        voxel_x, voxel_y, voxel_z = self.config.get_voxel_sizes()
+        
         vol_geom = astra.create_vol_geom(
             vol_y, vol_x, vol_z,
-            -vol_x/2 * self.config.voxel_size, vol_x/2 * self.config.voxel_size,
-            -vol_y/2 * self.config.voxel_size, vol_y/2 * self.config.voxel_size,
-            -vol_z/2 * self.config.voxel_size, vol_z/2 * self.config.voxel_size
+            -vol_x/2 * voxel_x, vol_x/2 * voxel_x,
+            -vol_y/2 * voxel_y, vol_y/2 * voxel_y,
+            -vol_z/2 * voxel_z, vol_z/2 * voxel_z
         )
         
-        print(f"DEBUG proj_geom: {proj_geom}")
-        print(f"DEBUG vol_geom: {vol_geom}")
-
+        logger.info(f"Projection geometry: {num_angles} angles, {det_rows}×{det_cols} detector")
+        logger.info(f"Volume geometry: {vol_x}×{vol_y}×{vol_z} voxels, "
+                   f"{vol_x*voxel_x:.2f}×{vol_y*voxel_y:.2f}×{vol_z*voxel_z:.2f} mm")
+        logger.info(f"Effective offsets: u={offset_u_mm:.3f}mm, v={offset_v_mm:.3f}mm")
+        
         return proj_geom, vol_geom
     
     def reconstruct(self, projections: np.ndarray) -> np.ndarray:
-        """Perform reconstruction"""
-        logger.info(f"Starting ASTRA reconstruction with {self.config.algorithm}")
+        """Perform 3D reconstruction"""
+        logger.info(f"Starting reconstruction with {self.config.reconstruction_algorithm}")
         
         try:
+            # Create geometries
             proj_geom, vol_geom = self.create_geometry(projections)
-            print(f"DEBUG BEFORE TRANSPOSE: projections.shape = {projections.shape}")
-            print(f"DEBUG BEFORE TRANSPOSE: projections range = [{projections.min()}, {projections.max()}]")
-
-            projections = projections.transpose(1, 0, 2)  # (rows, angles, cols)
-
-            print(f"DEBUG AFTER TRANSPOSE: projections.shape = {projections.shape}")
-            print(f"DEBUG AFTER TRANSPOSE: projections range = [{projections.min()}, {projections.max()}]")
-            print(f"DEBUG: proj_geom angles = {len(proj_geom['ProjectionAngles'])}")
-            print(f"DEBUG: proj_geom detector = {proj_geom['DetectorRowCount']} x {proj_geom['DetectorColCount']}")
             
+            # Transpose projections for ASTRA format: (angles, rows, cols) -> (rows, angles, cols)
+            projections = projections.transpose(1, 0, 2)
+            
+            # Create ASTRA data objects
             proj_id = astra.data3d.create('-proj3d', proj_geom, projections)
             vol_id = astra.data3d.create('-vol', vol_geom)
             
-            cfg = astra.astra_dict(self.config.algorithm)
+            # Configure reconstruction algorithm
+            cfg = astra.astra_dict(self.config.reconstruction_algorithm)
             cfg['ReconstructionDataId'] = vol_id
             cfg['ProjectionDataId'] = proj_id
             
-            if 'FDK' not in self.config.algorithm:
+            # Add options for iterative algorithms
+            if 'FDK' not in self.config.reconstruction_algorithm:
                 cfg['option'] = {'MinConstraint': 0}
-                if hasattr(self.config, 'iterations'):
-                    cfg['option']['MaxIter'] = self.config.iterations
+                if self.config.reconstruction_iterations > 0:
+                    cfg['option']['MaxIter'] = self.config.reconstruction_iterations
             
             alg_id = astra.algorithm.create(cfg)
             
+            # Run reconstruction
             start_time = time.perf_counter()
-            if 'FDK' in self.config.algorithm:
+            
+            if 'FDK' in self.config.reconstruction_algorithm:
                 astra.algorithm.run(alg_id)
             else:
-                for i in tqdm(range(self.config.iterations), desc="Reconstructing"):
+                for i in tqdm(range(self.config.reconstruction_iterations), desc="Reconstructing"):
                     astra.algorithm.run(alg_id, 1)
+            
             end_time = time.perf_counter()
             
+            # Retrieve reconstruction
             reconstruction = astra.data3d.get(vol_id)
             
+            # Cleanup ASTRA objects
             astra.algorithm.delete(alg_id)
             astra.data3d.delete(proj_id)
             astra.data3d.delete(vol_id)
@@ -492,11 +597,12 @@ class ASTRAReconstructor:
             logger.info(f"Reconstruction completed in {end_time - start_time:.2f} seconds")
             logger.info(f"Volume shape: {reconstruction.shape}")
             logger.info(f"Value range: [{np.min(reconstruction):.6f}, {np.max(reconstruction):.6f}]")
+            logger.info(f"Mean value: {np.mean(reconstruction):.6f}")
             
             return reconstruction
             
         except Exception as e:
-            logger.error(f"ASTRA reconstruction failed: {e}")
+            logger.error(f"Reconstruction failed: {e}")
             traceback.print_exc()
             raise
 
@@ -506,49 +612,64 @@ def save_pickle(obj, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump(obj, f)
+    logger.info(f"Saved to {path}")
 
 
 def run_pipeline(dataset_folder: str, metadata_filename: str = "metadata.json"):
-    """Run complete ASTRA reconstruction pipeline"""
+    """Run complete CBCT reconstruction pipeline"""
     
+    logger.info("="*60)
+    logger.info("ASTRA CBCT Reconstruction Pipeline")
+    logger.info("="*60)
+    
+    # Load configuration
     cfg = ASTRACBCTConfig.create_with_metadata(dataset_folder, metadata_filename)
     os.makedirs(cfg.output_path, exist_ok=True)
     
+    # Initialize pipeline components
     loader = CBCTDataLoader(cfg)
     preprocessor = CBCTPreprocessor(cfg)
     reconstructor = ASTRAReconstructor(cfg)
-    
-    logger.info("=== ASTRA CBCT Reconstruction Pipeline ===")
     
     t0 = time.time()
     
     # Load projections
     projections = loader.load_projection_stack()
     
-    # Preprocess
+    # Preprocess projections
     projections_processed = preprocessor.preprocess_projections(projections)
     
-    # Reconstruct
+    # Reconstruct volume
     reconstruction = reconstructor.reconstruct(projections_processed)
     
-    # Save results (matching custom kernel output)
+    # Save results
     save_pickle(reconstruction, os.path.join(cfg.output_path, "volume.pickle"))
     
-    t1 = time.time()
-    logger.info(f"Pipeline complete in {t1 - t0:.2f} s")
-    
-    # Save config snapshot
-    config_data = {
-        "runtime_seconds": t1 - t0,
-        "algorithm": cfg.algorithm,
+    # Save configuration snapshot
+    config_snapshot = {
+        "runtime_seconds": time.time() - t0,
+        "algorithm": cfg.reconstruction_algorithm,
         "volume_shape": reconstruction.shape,
-        "voxel_size": cfg.voxel_size,
-        "astra_downsample_factor": cfg.astra_downsample_factor
+        "voxel_size_mm": cfg.get_voxel_sizes(),
+        "num_projections": cfg.acquisition_num_projections,
+        "detector_size": cfg.get_detector_size(),
+        "downsample_factor": cfg.preprocessing_downsample_factor,
+        "calibration_offset_u_px": cfg.calibration_offset_u_px,
+        "calibration_offset_v_px": cfg.calibration_offset_v_px,
+        "calibration_tilt_deg": cfg.calibration_tilt_deg
     }
-    save_pickle(config_data, os.path.join(cfg.output_path, "config_snapshot.pickle"))
+    save_pickle(config_snapshot, os.path.join(cfg.output_path, "config_snapshot.pickle"))
     
-    logger.info("Reconstruction finished. Volume stats: min=%.6e max=%.6e mean=%.6e" %
-                (float(np.min(reconstruction)), float(np.max(reconstruction)), float(np.mean(reconstruction))))
+    t1 = time.time()
+    
+    logger.info("="*60)
+    logger.info(f"Pipeline completed in {t1 - t0:.2f} seconds")
+    logger.info(f"Volume statistics:")
+    logger.info(f"  Min:  {float(np.min(reconstruction)):.6e}")
+    logger.info(f"  Max:  {float(np.max(reconstruction)):.6e}")
+    logger.info(f"  Mean: {float(np.mean(reconstruction)):.6e}")
+    logger.info(f"  Std:  {float(np.std(reconstruction)):.6e}")
+    logger.info("="*60)
     
     return reconstruction
 
@@ -556,18 +677,39 @@ def run_pipeline(dataset_folder: str, metadata_filename: str = "metadata.json"):
 if __name__ == "__main__":
     import argparse
     
-    ap = argparse.ArgumentParser(description="ASTRA CBCT Reconstruction with RAW file support")
-    ap.add_argument("--input", "-i", default="data/CBCT_3D_SheppLogan",
-                    help="Dataset folder containing slices/ and metadata.json")
-    ap.add_argument("--metadata", "-m", default="metadata.json",
-                    help="Metadata filename")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(
+        description="ASTRA CBCT Reconstruction Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python %(prog)s --input data/my_scan
+    python %(prog)s --input data/my_scan --metadata config.json
+        """
+    )
+    
+    parser.add_argument("--input", "-i", 
+                       default="data/20251119_Tako_IronWire",
+                       help="Dataset folder containing slices/ and metadata.json")
+    parser.add_argument("--metadata", "-m", 
+                       default="metadata.json",
+                       help="Metadata filename (default: metadata.json)")
+    
+    args = parser.parse_args()
     
     try:
         recon = run_pipeline(args.input, args.metadata)
-        logger.info("Success! View results with CBCTPipeline_result_view.py")
-        from CBCTPipeline_result_view import view_pickled_volume_napari
-        view_pickled_volume_napari(os.path.join(args.input, "results_astra", "volume.pickle"))
+        
+        logger.info("Reconstruction successful!")
+        logger.info(f"Results saved to: {os.path.join(args.input, 'results_astra')}")
+        
+        # Try to launch viewer if available
+        try:
+            from CBCTPipeline_result_view import view_pickled_volume_napari
+            logger.info("Launching napari viewer...")
+            view_pickled_volume_napari(os.path.join(args.input, "results_astra", "volume.pickle"))
+        except ImportError:
+            logger.info("napari viewer not available. View results manually.")
+            
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
         traceback.print_exc()

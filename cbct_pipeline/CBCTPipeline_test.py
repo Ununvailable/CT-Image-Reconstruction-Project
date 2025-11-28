@@ -167,7 +167,7 @@ class CBCTConfig:
         if "resolution" in meta:
             res = meta["resolution"]
             if isinstance(res, str):
-                # Parse "3072 × 3072" format
+                # Parse "3072 × 3072" format                                    
                 parts = res.replace('×', 'x').split('x')
                 self.raw_resolution = (int(parts[0].strip()), int(parts[1].strip()))
             else:
