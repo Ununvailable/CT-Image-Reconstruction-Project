@@ -1,4 +1,5 @@
 .vscode/
+data/TemplateDataset/
 data/Plastic HSI/
 data/cbct_projections/
 data/cbct_reconstructed/
@@ -16,4 +17,6 @@ data/20251111_Tako_XrayMachine/
 data/20251114_Tako_XrayMachine/
 data/20251117_Tako_XrayMachine/
 data/20251119_Tako_IronWire/
+data/20251119_Tako_SiC/
 data/20251127_Tako_IronWire/
+data/20251127_Tako_SiC/
