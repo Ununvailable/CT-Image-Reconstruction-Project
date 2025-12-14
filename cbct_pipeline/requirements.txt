@@ -1,0 +1,37 @@
+# CBCT Reconstruction Pipeline Requirements
+# Python 3.8+
+
+# Core numerical computing
+numpy>=1.21.0,<2.0.0
+scipy>=1.7.0
+
+# Image processing
+Pillow>=9.0.0
+tifffile>=2021.11.0
+
+# Data handling
+dataclasses>=0.6; python_version < '3.7'
+
+# Progress bars and logging
+tqdm>=4.62.0
+
+# 3D visualization
+napari>=0.4.16
+PyQt5>=5.15.0  # Backend for napari
+
+# GPU acceleration (optional - install separately based on CUDA version)
+# cupy-cuda11x>=10.0.0  # For CUDA 11.x
+# cupy-cuda12x>=12.0.0  # For CUDA 12.x
+
+# ASTRA Toolbox (install via conda recommended)
+# conda install -c astra-toolbox astra-toolbox
+# OR install from: https://github.com/astra-toolbox/astra-toolbox
+
+# Optional: Advanced preprocessing
+# scikit-image>=0.19.0
+# opencv-python>=4.5.0
+
+# Development tools (optional)
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0
