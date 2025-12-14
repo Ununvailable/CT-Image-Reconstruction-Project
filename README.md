@@ -262,8 +262,7 @@ Contributions welcome! Please:
 
 ## Contact
 
-- Issues: [GitHub Issues](https://github.com/yourusername/cbct-pipeline/issues)
-- Email: your.email@example.com
+- Email: leminhduc24994@gmail.com
 
 ## Acknowledgments
 
