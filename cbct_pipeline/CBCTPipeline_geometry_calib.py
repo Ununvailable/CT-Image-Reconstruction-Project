@@ -170,39 +170,96 @@ class CalibrationConfig:
         else:
             logger.warning(f"No metadata.json found at {config.metadata_path}, using defaults")
         
+        # Auto-detect file format if not specified
+        config._auto_detect_format()
+        
         config._calculate_calibration_pairs()
         return config
     
+    def _auto_detect_format(self):
+        """Auto-detect file format from files in input directory"""
+        if not os.path.exists(self.input_path):
+            return
+        
+        # Check what files exist
+        import glob
+        for ext, fmt in [('.tif', 'tiff'), ('.tiff', 'tiff'), ('.raw', 'raw'), 
+                         ('.png', 'png'), ('.jpg', 'jpg'), ('.jpeg', 'jpeg')]:
+            pattern = os.path.join(self.input_path, f"*{ext}")
+            if glob.glob(pattern):
+                if self.file_format == "raw" and fmt != "raw":
+                    # Override default if we find actual files
+                    self.file_format = fmt
+                    logger.info(f"Auto-detected file format: {fmt}")
+                break
+    
     def _load_metadata(self):
-        """Load parameters from metadata.json"""
+        """Load parameters from metadata.json (supports new schema)"""
         with open(self.metadata_path, 'r', encoding='utf-8') as f:
             meta = json.load(f)
         
-        # Acquisition parameters
-        if "num_projections" in meta:
+        # ============================================================
+        # ACQUISITION PARAMETERS
+        # ============================================================
+        # New schema
+        if "acquisition_num_projections" in meta:
+            self.num_projections = int(meta["acquisition_num_projections"])
+        elif "num_projections" in meta:
             self.num_projections = int(meta["num_projections"])
-        if "angle_step" in meta:
+        
+        if "acquisition_angle_step_deg" in meta:
+            self.angle_step = float(meta["acquisition_angle_step_deg"])
+        elif "angle_step" in meta:
             self.angle_step = float(meta["angle_step"])
-        if "start_angle" in meta:
+        
+        if "acquisition_start_angle_deg" in meta:
+            self.start_angle = float(meta["acquisition_start_angle_deg"])
+        elif "start_angle" in meta:
             self.start_angle = float(meta["start_angle"])
-        if "scan_angle_degrees" in meta:
+        
+        if "acquisition_scan_range_deg" in meta:
+            self.scan_angle = float(meta["acquisition_scan_range_deg"])
+        elif "scan_angle_degrees" in meta:
             self.scan_angle = float(meta["scan_angle_degrees"])
         elif "scan_angle" in meta:
             self.scan_angle = float(meta["scan_angle"])
-        if "acquisition_direction" in meta:
+        
+        if "acquisition_rotation_direction" in meta:
+            self.acquisition_direction = str(meta["acquisition_rotation_direction"])
+        elif "acquisition_direction" in meta:
             self.acquisition_direction = str(meta["acquisition_direction"])
         
-        # Detector parameters
-        if "detector_pixels" in meta:
+        # ============================================================
+        # DETECTOR PARAMETERS
+        # ============================================================
+        # New schema: separate rows/cols
+        if "detector_rows_px" in meta and "detector_cols_px" in meta:
+            self.detector_size = (int(meta["detector_rows_px"]), int(meta["detector_cols_px"]))
+        elif "detector_pixels" in meta:
             self.detector_size = tuple(int(x) for x in meta["detector_pixels"])
-        if "pixel_size_mm" in meta:
+        
+        # New schema: separate u/v pixel pitch
+        if "detector_pixel_pitch_u_mm" in meta and "detector_pixel_pitch_v_mm" in meta:
+            self.pixel_size_mm = (float(meta["detector_pixel_pitch_v_mm"]), 
+                                  float(meta["detector_pixel_pitch_u_mm"]))
+        elif "pixel_size_mm" in meta:
             self.pixel_size_mm = tuple(float(x) for x in meta["pixel_size_mm"])
         
-        # Geometry
-        if "source_origin_dist" in meta:
+        # ============================================================
+        # GEOMETRY PARAMETERS
+        # ============================================================
+        # New schema
+        if "source_to_origin_dist_mm" in meta:
+            self.source_object_dist = float(meta["source_to_origin_dist_mm"])
+        elif "source_origin_dist" in meta:
             self.source_object_dist = float(meta["source_origin_dist"])
-        if "source_detector_dist" in meta:
+        
+        if "source_to_detector_dist_mm" in meta:
+            self.source_detector_dist = float(meta["source_to_detector_dist_mm"])
+        elif "source_detector_dist" in meta:
             self.source_detector_dist = float(meta["source_detector_dist"])
+        
+        # Detector offset (old schema)
         if "detector_offset" in meta:
             offsets = meta["detector_offset"]
             self.detector_offset_u = float(offsets[0])
@@ -212,22 +269,52 @@ class CalibrationConfig:
         if "detector_offset_v" in meta:
             self.detector_offset_v = float(meta["detector_offset_v"])
         
-        # File format parameters
+        # ============================================================
+        # CALIBRATION PARAMETERS (from previous calibration)
+        # ============================================================
+        if "calibration_offset_u_px" in meta:
+            self.detector_offset_u = float(meta["calibration_offset_u_px"])
+        if "calibration_offset_v_px" in meta:
+            self.detector_offset_v = float(meta["calibration_offset_v_px"])
+        if "calibration_tilt_deg" in meta:
+            self.detector_tilt = float(meta["calibration_tilt_deg"])
+        if "calibration_skew_deg" in meta:
+            self.detector_skew = float(meta["calibration_skew_deg"])
+        if "calibration_angular_offset_deg" in meta:
+            self.angular_offset = float(meta["calibration_angular_offset_deg"])
+        
+        # ============================================================
+        # FILE FORMAT PARAMETERS
+        # ============================================================
         if "file_format" in meta:
             self.file_format = str(meta["file_format"]).lower()
-        if "projection_dtype" in meta:
+        
+        # RAW file parameters (new schema)
+        if "raw_dtype" in meta:
+            self.bit_depth = str(meta["raw_dtype"])
+        elif "projection_dtype" in meta:
             self.bit_depth = str(meta["projection_dtype"])
-        if "raw_bit_depth" in meta:
+        elif "raw_bit_depth" in meta:
             self.bit_depth = str(meta["raw_bit_depth"])
-        if "raw_endianness" in meta:
+        
+        if "raw_endian" in meta:
+            self.endianness = str(meta["raw_endian"]).lower()
+        elif "raw_endianness" in meta:
             self.endianness = str(meta["raw_endianness"]).lower()
-        if "raw_header_size" in meta:
+        
+        if "raw_header_bytes" in meta:
+            self.header_bytes = int(meta["raw_header_bytes"])
+        elif "raw_header_size" in meta:
             hs = meta["raw_header_size"]
             if isinstance(hs, str):
                 self.header_bytes = int(hs.split()[0])
             else:
                 self.header_bytes = int(hs)
-        if "raw_resolution" in meta:
+        
+        # RAW resolution (new schema)
+        if "raw_rows_px" in meta and "raw_cols_px" in meta:
+            self.raw_resolution = (int(meta["raw_rows_px"]), int(meta["raw_cols_px"]))
+        elif "raw_resolution" in meta:
             res = meta["raw_resolution"]
             if isinstance(res, str):
                 parts = res.replace('×', 'x').split('x')
@@ -235,9 +322,20 @@ class CalibrationConfig:
             else:
                 self.raw_resolution = tuple(int(x) for x in res)
         
+        # ============================================================
+        # PREPROCESSING (for reference, not used in calibration)
+        # ============================================================
+        if "preprocessing_downsample_factor" in meta:
+            ds = int(meta["preprocessing_downsample_factor"])
+            if ds > 1:
+                logger.info(f"Note: Dataset has preprocessing downsample factor {ds}")
+        
+        # Log summary
+        magnification = self.source_detector_dist / self.source_object_dist
         logger.info(f"Loaded: {self.num_projections} projections, "
                    f"detector {self.detector_size[0]}×{self.detector_size[1]}, "
-                   f"SOD={self.source_object_dist}mm, SDD={self.source_detector_dist}mm")
+                   f"SOD={self.source_object_dist}mm, SDD={self.source_detector_dist}mm, "
+                   f"mag={magnification:.2f}×")
     
     @classmethod
     def from_json(cls, path: str) -> "CalibrationConfig":
@@ -443,16 +541,33 @@ class ProjectionLoader:
         return data.reshape((height, width)).astype(np.float32)
     
     def _load_tiff(self, path: str) -> np.ndarray:
-        """Load TIFF file"""
+        """Load TIFF file (supports 8/16/32-bit, grayscale/RGB, multi-page)"""
         try:
             import tifffile
             arr = tifffile.imread(path)
+            
+            # Handle multi-page TIFF (take first page)
             if arr.ndim == 3 and arr.shape[0] == 1:
                 arr = arr.squeeze(0)
+            elif arr.ndim == 3 and arr.shape[2] in (3, 4):
+                # RGB/RGBA -> convert to grayscale
+                arr = np.mean(arr[..., :3], axis=-1)
+            elif arr.ndim == 3:
+                # Multi-page, take first
+                arr = arr[0]
+            
             return arr.astype(np.float32)
         except ImportError:
+            # Fallback to PIL
             from PIL import Image
-            return np.array(Image.open(path), dtype=np.float32)
+            with Image.open(path) as img:
+                # Convert to grayscale if needed
+                if img.mode in ('RGB', 'RGBA'):
+                    img = img.convert('L')
+                elif img.mode == 'I;16':
+                    # 16-bit grayscale
+                    return np.array(img, dtype=np.float32)
+                return np.array(img, dtype=np.float32)
     
     def _load_image(self, path: str) -> np.ndarray:
         """Load PNG/JPG image file"""
@@ -1639,8 +1754,12 @@ class CalibrationVisualizer:
     
     def generate_report(self, result: CalibrationResult, config: CalibrationConfig = None,
                         spatial_analysis: Dict = None):
-        """Generate comprehensive text report"""
+        """Generate comprehensive text report and calibration JSON"""
         report_path = os.path.join(self.output_dir, "calibration_report.txt")
+        
+        # Get current date
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
         
         with open(report_path, 'w') as f:
             f.write("=" * 70 + "\n")
@@ -1694,17 +1813,43 @@ class CalibrationVisualizer:
             f.write("=" * 70 + "\n")
             f.write("HOW TO APPLY THESE CORRECTIONS\n")
             f.write("=" * 70 + "\n\n")
-            f.write("Update your metadata.json with:\n\n")
-            f.write(f'"detector_offset_u": {result.cor_offset_u:.4f},\n')
-            f.write(f'"detector_offset_v": {result.cor_offset_v:.4f},\n')
-            f.write(f'"detector_tilt": {result.detector_tilt:.4f},\n\n')
-            
-            f.write("Or for ASTRA cone_vec geometry, these values should be\n")
-            f.write("incorporated into the detector position/orientation vectors.\n\n")
+            f.write("Add/update these fields in your metadata.json:\n\n")
+            f.write('  "_comment_calibration": "========== CALIBRATION PARAMETERS ==========",\n')
+            f.write(f'  "calibration_offset_u_px": {result.cor_offset_u:.4f},\n')
+            f.write(f'  "calibration_offset_v_px": {result.cor_offset_v:.4f},\n')
+            f.write(f'  "calibration_offset_reference": "fullres",\n')
+            f.write(f'  "calibration_tilt_deg": {result.detector_tilt:.4f},\n')
+            f.write(f'  "calibration_skew_deg": {result.detector_skew:.4f},\n')
+            f.write(f'  "calibration_sod_correction_mm": {result.sod_correction:.4f},\n')
+            f.write(f'  "calibration_angular_offset_deg": {result.angular_offset:.4f},\n')
+            f.write(f'  "calibration_method": "auto",\n')
+            f.write(f'  "calibration_final_cost": {result.final_cost:.6f},\n')
+            f.write(f'  "calibration_date": "{today}"\n\n')
             
             f.write("=" * 70 + "\n")
         
         logger.info(f"Report saved to {report_path}")
+        
+        # Also save calibration parameters as JSON for easy copy-paste
+        calibration_json_path = os.path.join(self.output_dir, "calibration_params.json")
+        calibration_params = {
+            "_comment_calibration": "========== CALIBRATION PARAMETERS (from geometry calibration) ==========",
+            "calibration_offset_u_px": round(result.cor_offset_u, 4),
+            "calibration_offset_v_px": round(result.cor_offset_v, 4),
+            "calibration_offset_reference": "fullres",
+            "calibration_tilt_deg": round(result.detector_tilt, 4),
+            "calibration_skew_deg": round(result.detector_skew, 4),
+            "calibration_sod_correction_mm": round(result.sod_correction, 4),
+            "calibration_angular_offset_deg": round(result.angular_offset, 4),
+            "calibration_method": "auto",
+            "calibration_final_cost": round(result.final_cost, 6),
+            "calibration_date": today
+        }
+        
+        with open(calibration_json_path, 'w') as f:
+            json.dump(calibration_params, f, indent=2)
+        
+        logger.info(f"Calibration params saved to {calibration_json_path}")
 
 
 # =============================================================================

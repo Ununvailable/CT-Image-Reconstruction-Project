@@ -66,7 +66,7 @@ def save_image(image: np.ndarray, bit_depth: str, path: str) -> None:
 if __name__ == "__main__":
     try:
         # Example usage
-        dataset_input_path = "data/20251119_Tako_Wire_and_SiC/slices/"
+        dataset_input_path = "data/20251119_Tako_SiC/slices/"
         file_collection = os.listdir(dataset_input_path)
         file_name = ""  # Example file name, should be parameterized
         for file_name in file_collection:
@@ -75,7 +75,7 @@ if __name__ == "__main__":
                 file_name = file_name[:-4]  # Remove .raw extension
                 raw_file_path = os.path.join(dataset_input_path, file_name + ".raw")
                 
-                image_output_path = os.path.join("data/20251119_Tako_Wire_and_SiC/converted/", file_name + ".png")
+                image_output_path = os.path.join("data/20251119_Tako_SiC/converted/", file_name + ".png")
                 header_size = 0  # Example header size, should be parameterized
                 endianness = "little"  # Example endianness, should be parameterized
                 

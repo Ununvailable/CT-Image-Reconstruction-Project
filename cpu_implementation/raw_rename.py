@@ -82,7 +82,7 @@ def rename_raw_files(directory_path):
 
 if __name__ == "__main__":
     # Set your directory path here
-    directory_path = "data/20251119_Tako_Wire_and_SiC/slices/"
+    directory_path = "data/20251119_Tako_SiC/slices/"
     
     # Check if directory exists
     if not os.path.exists(directory_path):
