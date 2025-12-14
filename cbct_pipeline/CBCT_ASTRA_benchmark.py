@@ -246,12 +246,24 @@ class ASTRACBCTConfig:
         offset_u = self.calibration_offset_u_px
         offset_v = self.calibration_offset_v_px
         
-        if self.calibration_offset_reference != "fullres":
+        if self.calibration_offset_reference == "fullres":
             ds = self.preprocessing_downsample_factor
             offset_u = offset_u / ds
             offset_v = offset_v / ds
         
         return (offset_u, offset_v)
+    
+    def get_calibration_offset_mm(self) -> Tuple[float, float]:
+        """
+        Get calibration offset in mm (physical units).
+        This is independent of any downsampling - always uses original pixel pitch.
+        
+        This is the PREFERRED method for geometry creation.
+        """
+        # Always convert using ORIGINAL pixel pitch (not downsampled)
+        offset_u_mm = self.calibration_offset_u_px * self.detector_pixel_pitch_u_mm
+        offset_v_mm = self.calibration_offset_v_px * self.detector_pixel_pitch_v_mm
+        return (offset_u_mm, offset_v_mm)
 
 
 def discover_projection_files(folder: str, file_format: str = None, allowed_exts=None) -> List[str]:
@@ -491,10 +503,11 @@ class ASTRAReconstructor:
         pixel_pitch_u = self.config.detector_pixel_pitch_u_mm * ds
         pixel_pitch_v = self.config.detector_pixel_pitch_v_mm * ds
         
-        # Get calibration offsets in working resolution pixels, then convert to mm
-        offset_u_px, offset_v_px = self.config.get_calibration_offset_px()
-        offset_u_mm = offset_u_px * pixel_pitch_u
-        offset_v_mm = offset_v_px * pixel_pitch_v
+        # =========================================================================
+        # KEY FIX: Get calibration offsets directly in mm (physical units)
+        # This is INDEPENDENT of downsampling and volume scaling
+        # =========================================================================
+        offset_u_mm, offset_v_mm = self.config.get_calibration_offset_mm()
         
         # Source-object and object-detector distances with SOD correction
         SOD = self.config.source_to_origin_dist_mm + self.config.calibration_sod_correction_mm
@@ -512,10 +525,10 @@ class ASTRAReconstructor:
             vectors[i, 1] = -np.cos(ang) * SOD
             vectors[i, 2] = 0
             
-            # Detector center position (with offset)
-            vectors[i, 3] = -np.sin(ang) * ODD + np.cos(ang) * offset_u_mm
-            vectors[i, 4] = np.cos(ang) * ODD + np.sin(ang) * offset_u_mm
-            vectors[i, 5] = offset_v_mm
+            # Detector center position (with offset in mm)
+            vectors[i, 3] = -np.sin(ang) * ODD + np.cos(ang) * offset_u_mm/2
+            vectors[i, 4] = np.cos(ang) * ODD + np.sin(ang) * offset_u_mm/2
+            vectors[i, 5] = offset_v_mm/2
             
             # Detector u-axis (horizontal) with tilt
             vectors[i, 6] = np.cos(ang) * np.cos(tilt_rad) * pixel_pitch_u
@@ -542,8 +555,9 @@ class ASTRAReconstructor:
         
         logger.info(f"Projection geometry: {num_angles} angles, {det_rows}×{det_cols} detector")
         logger.info(f"Volume geometry: {vol_x}×{vol_y}×{vol_z} voxels, "
-                   f"{vol_x*voxel_x:.2f}×{vol_y*voxel_y:.2f}×{vol_z*voxel_z:.2f} mm")
-        logger.info(f"Effective offsets: u={offset_u_mm:.3f}mm, v={offset_v_mm:.3f}mm")
+                f"{vol_x*voxel_x:.2f}×{vol_y*voxel_y:.2f}×{vol_z*voxel_z:.2f} mm")
+        logger.info(f"COR offset: {offset_u_mm:.4f} mm (u), {offset_v_mm:.4f} mm (v)")
+        logger.info(f"  = {self.config.calibration_offset_u_px:.2f} px @ fullres")
         
         return proj_geom, vol_geom
     
@@ -688,7 +702,7 @@ Examples:
     )
     
     parser.add_argument("--input", "-i", 
-                       default="data/20251119_Tako_IronWire",
+                       default="data/20251201_Hanu_IronBead",
                        help="Dataset folder containing slices/ and metadata.json")
     parser.add_argument("--metadata", "-m", 
                        default="metadata.json",
